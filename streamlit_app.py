@@ -2,99 +2,179 @@ import streamlit as st
 import pandas as pd
 import numpy as np
 import joblib
-import plotly.express as px
+import folium
+from folium.plugins import MarkerCluster
+from streamlit_folium import st_folium
 
 st.set_page_config(layout="wide", page_title="Earthquake Clustering")
 
 st.title("🌋 Earthquake Clustering & Severity Viewer")
 
+# --- 1. Load Data & Models ---
 @st.cache_data
 def load_data():
+    # Perbaikan: Menggunakan 'time' bukan 'datetime' sesuai error log
     df = pd.read_csv("earthquakes_with_cluster.csv")
-    df['datetime'] = pd.to_datetime(df['datetime'], errors='coerce')
+    df['time'] = pd.to_datetime(df['time'], errors='coerce')
     return df
 
 @st.cache_resource
 def load_model():
     pipeline = joblib.load("kmeans_pipeline.joblib")
-    centroids = pd.read_csv("cluster_info.csv")
-    return pipeline, centroids
+    # Menggunakan nama variabel konsisten
+    cluster_info = pd.read_csv("cluster_info.csv")
+    return pipeline, cluster_info
 
-df = load_data()
-pipeline, centroids = load_model()
+# Load awal
+try:
+    df = load_data()
+    pipeline, cluster_info = load_model()
+except Exception as e:
+    st.error(f"Error loading data/model: {e}")
+    st.stop()
 
-# Sidebar filters
-st.sidebar.header("Filter Data")
-min_date = st.sidebar.date_input("Tanggal awal", df['datetime'].min().date())
-max_date = st.sidebar.date_input("Tanggal akhir", df['datetime'].max().date())
-mag_min, mag_max = st.sidebar.slider("Rentang Magnitudo", float(df['magnitude'].min()), float(df['magnitude'].max()), (float(df['magnitude'].min()), float(df['magnitude'].max())))
-depth_min, depth_max = st.sidebar.slider("Rentang Kedalaman (km)", float(df['depth'].min()), float(df['depth'].max()), (float(df['depth'].min()), float(df['depth'].max())))
+# --- 2. Sidebar Filters (Main Data) ---
+st.sidebar.header("Filter Data Utama")
+min_date = st.sidebar.date_input("Tanggal awal", df['time'].min().date())
+max_date = st.sidebar.date_input("Tanggal akhir", df['time'].max().date())
 
+# Handle kolom 'mag' vs 'magnitude'
+mag_col = 'mag' if 'mag' in df.columns else 'magnitude'
+mag_min, mag_max = st.sidebar.slider("Rentang Magnitudo", 
+                                     float(df[mag_col].min()), float(df[mag_col].max()), 
+                                     (float(df[mag_col].min()), float(df[mag_col].max())))
+
+# Handle depth
+depth_min_val = float(df['depth'].min()) if not df['depth'].isna().all() else 0.0
+depth_max_val = float(df['depth'].max()) if not df['depth'].isna().all() else 700.0
+depth_min, depth_max = st.sidebar.slider("Rentang Kedalaman (km)", depth_min_val, depth_max_val, (depth_min_val, depth_max_val))
+
+# Apply Filter
 filtered = df[
-    (df['datetime'].dt.date >= min_date) &
-    (df['datetime'].dt.date <= max_date) &
-    (df['magnitude'].between(mag_min, mag_max)) &
-    (df['depth'].between(depth_min, depth_max))
+    (df['time'].dt.date >= min_date) &
+    (df['time'].dt.date <= max_date) &
+    (df[mag_col] >= mag_min) & (df[mag_col] <= mag_max)
 ]
+if not df['depth'].isna().all():
+    filtered = filtered[(filtered['depth'] >= depth_min) & (filtered['depth'] <= depth_max)]
 
-st.markdown(f"Menampilkan **{len(filtered)}** data setelah filter")
+st.markdown(f"Menampilkan **{len(filtered)}** data gempa (Main Dataset)")
 
-# Map visualization
-fig = px.scatter_mapbox(filtered, lat='latitude', lon='longitude', color='cluster',
-                        hover_data=['datetime','magnitude','depth','location'],
-                        zoom=4, height=600, mapbox_style='open-street-map')
-st.plotly_chart(fig, use_container_width=True)
+# --- 3. Main Map Visualization (Folium + MarkerCluster) ---
+# Menggunakan Folium agar fitur 'Zoom Out = Mengumpul' berfungsi
+if not filtered.empty:
+    center_lat = filtered['latitude'].mean()
+    center_lon = filtered['longitude'].mean()
+else:
+    center_lat, center_lon = 0, 0
 
-# Cluster info
-st.subheader("Informasi Klaster")
-st.dataframe(centroids)
+m = folium.Map(location=[center_lat, center_lon], zoom_start=5)
+marker_cluster = MarkerCluster().add_to(m)
 
-# Prediction for new input
-st.sidebar.header("Prediksi Keparahan Baru")
-lat = st.sidebar.number_input("Latitude", value=0.0)
-lon = st.sidebar.number_input("Longitude", value=0.0)
-mag = st.sidebar.number_input("Magnitudo", value=5.0)
-dep = st.sidebar.number_input("Kedalaman (km)", value=10.0)
+# Batasi tampilan di peta agar tidak berat (Max 2000 titik)
+MAX_POINTS = 2000
+data_to_plot = filtered.head(MAX_POINTS)
+if len(filtered) > MAX_POINTS:
+    st.caption(f"⚠️ Peta hanya menampilkan {MAX_POINTS} data pertama demi performa. Filter data untuk hasil lebih spesifik.")
 
-if st.sidebar.button("Prediksi"):
-    arr = np.array([[lat, lon, mag, dep]])
-    clust = pipeline.named_steps['kmeans'].predict(pipeline.named_steps['scaler'].transform(arr))[0]
-    info = centroids[centroids['cluster']==clust].iloc[0].to_dict()
-    st.success(f"Klaster {clust}: {info['severity_label']} (skor {info['severity_score']:.3f})")
+colors = ['red', 'blue', 'green', 'purple', 'orange', 'darkred', 'cadetblue', 'black']
 
-# Upload new data for clustering
-st.sidebar.header("Upload Data Baru untuk Clustering")
-uploaded_file = st.sidebar.file_uploader("Upload file CSV atau TSV", type=['csv', 'tsv'])
+for _, row in data_to_plot.iterrows():
+    c_id = int(row['cluster'])
+    color = colors[c_id % len(colors)]
+    
+    # Tooltip info
+    popup_txt = f"""
+    <b>Mag:</b> {row[mag_col]}<br>
+    <b>Depth:</b> {row['depth']} km<br>
+    <b>Cluster:</b> {c_id}
+    """
+    
+    folium.Marker(
+        location=[row['latitude'], row['longitude']],
+        popup=folium.Popup(popup_txt, max_width=200),
+        icon=folium.Icon(color=color, icon='info-sign'),
+    ).add_to(marker_cluster)
+
+st_folium(m, width=1000, height=500)
+
+# Info Cluster
+st.subheader("Informasi Pusat Klaster (Centroids)")
+st.dataframe(cluster_info)
+
+st.divider()
+
+# --- 4. Sidebar: Predict Single Point ---
+st.sidebar.markdown("---")
+st.sidebar.header("Prediksi Satu Titik")
+p_lat = st.sidebar.number_input("Lat", value=0.0)
+p_lon = st.sidebar.number_input("Lon", value=0.0)
+p_mag = st.sidebar.number_input("Mag", value=5.0)
+p_dep = st.sidebar.number_input("Depth (km)", value=10.0)
+
+if st.sidebar.button("Prediksi Titik"):
+    # Fitur harus urut: lat, lon, mag, depth (sesuai training)
+    arr = np.array([[p_lat, p_lon, p_mag, p_dep]])
+    try:
+        clust = pipeline.named_steps['kmeans'].predict(pipeline.named_steps['scaler'].transform(arr))[0]
+        # Ambil info dari tabel cluster_info
+        info = cluster_info[cluster_info['cluster'] == clust].iloc[0].to_dict()
+        st.sidebar.success(f"Hasil: Klaster {clust}")
+        st.sidebar.json(info)
+    except Exception as e:
+        st.sidebar.error(f"Gagal memprediksi: {e}")
+
+# --- 5. Sidebar: Upload New Data (Fitur Baru) ---
+st.sidebar.markdown("---")
+st.sidebar.header("Upload Data Baru (Batch)")
+uploaded_file = st.sidebar.file_uploader("Upload CSV/TSV", type=['csv', 'tsv'])
 
 if uploaded_file is not None:
-    # Determine separator
+    st.header("📂 Analisis Data Upload")
     sep = '\t' if uploaded_file.name.endswith('.tsv') else ','
+    
     try:
         new_df = pd.read_csv(uploaded_file, sep=sep)
-        st.sidebar.success("File berhasil diupload!")
         
-        # Check required columns
-        required_cols = ['latitude', 'longitude', 'magnitude', 'depth']
+        # Normalisasi nama kolom agar sesuai model (magnitude -> mag)
+        new_df.columns = [c.lower() for c in new_df.columns]
+        if 'magnitude' in new_df.columns:
+            new_df.rename(columns={'magnitude': 'mag'}, inplace=True)
+            
+        required_cols = ['latitude', 'longitude', 'mag', 'depth']
+        
+        # Cek kelengkapan kolom
         if not all(col in new_df.columns for col in required_cols):
-            st.sidebar.error(f"File harus memiliki kolom: {', '.join(required_cols)}")
+            st.error(f"File wajib memiliki kolom (atau variannya): {', '.join(required_cols)}")
         else:
-            # Predict clusters
+            # Lakukan Prediksi
             features = new_df[required_cols]
-            scaled_features = pipeline.named_steps['scaler'].transform(features)
-            new_df['cluster'] = pipeline.named_steps['kmeans'].predict(scaled_features)
+            # Handle NaN
+            features = features.fillna(0) 
             
-            # Add severity info
-            new_df['severity_label'] = new_df['cluster'].map(centroids.set_index('cluster')['severity_label'])
-            new_df['severity_score'] = new_df['cluster'].map(centroids.set_index('cluster')['severity_score'])
+            scaled = pipeline.named_steps['scaler'].transform(features)
+            new_df['cluster'] = pipeline.named_steps['kmeans'].predict(scaled)
             
-            st.subheader("Data Baru dengan Klaster")
-            st.dataframe(new_df)
+            # Map severity info (menggunakan merge agar lebih aman)
+            new_df = new_df.merge(cluster_info[['cluster', 'label', 'severity_score']], on='cluster', how='left')
             
-            # Optional: Visualize on map
-            if st.checkbox("Tampilkan di peta"):
-                fig_new = px.scatter_mapbox(new_df, lat='latitude', lon='longitude', color='cluster',
-                                            hover_data=['magnitude','depth','severity_label'],
-                                            zoom=4, height=600, mapbox_style='open-street-map')
-                st.plotly_chart(fig_new, use_container_width=True)
+            st.success("Klasifikasi Selesai!")
+            st.dataframe(new_df.head())
+            
+            # Visualisasi Data Upload (Simple Folium Map)
+            if st.checkbox("Tampilkan Peta Data Upload"):
+                m_new = folium.Map(location=[new_df['latitude'].mean(), new_df['longitude'].mean()], zoom_start=4)
+                mc_new = MarkerCluster().add_to(m_new)
+                
+                # Plot max 1000 data upload
+                for _, row in new_df.head(1000).iterrows():
+                    folium.Marker(
+                        [row['latitude'], row['longitude']],
+                        popup=f"Cluster: {row['cluster']}<br>Label: {row.get('label', '-')}",
+                        icon=folium.Icon(color='blue')
+                    ).add_to(mc_new)
+                
+                st_folium(m_new, width=1000, height=500, key="new_data_map")
+                
     except Exception as e:
-        st.sidebar.error(f"Error membaca file: {e}")
+        st.error(f"Error memproses file: {e}")
