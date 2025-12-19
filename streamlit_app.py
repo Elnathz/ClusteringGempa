@@ -4,20 +4,20 @@ import numpy as np
 import joblib
 import plotly.express as px
 
-st.set_page_config(layout="wide", page_title="Earthquake Clustering v2")
+st.set_page_config(layout="wide", page_title="Earthquake Clustering")
 
-st.title("🌋 Earthquake Clustering & Severity Viewer v2")
+st.title("🌋 Earthquake Clustering & Severity Viewer")
 
 @st.cache_data
 def load_data():
-    df = pd.read_csv("earthquakes_with_cluster_v2.csv")
+    df = pd.read_csv("earthquakes_with_cluster.csv")
     df['datetime'] = pd.to_datetime(df['datetime'], errors='coerce')
     return df
 
 @st.cache_resource
 def load_model():
-    pipeline = joblib.load("kmeans_pipeline_v2.joblib")
-    centroids = pd.read_csv("cluster_info_v2.csv")
+    pipeline = joblib.load("kmeans_pipeline.joblib")
+    centroids = pd.read_csv("cluster_info.csv")
     return pipeline, centroids
 
 df = load_data()
