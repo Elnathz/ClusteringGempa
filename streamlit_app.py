@@ -156,7 +156,12 @@ if uploaded_file is not None:
             new_df['cluster'] = pipeline.named_steps['kmeans'].predict(scaled)
             
             # Map severity info (menggunakan merge agar lebih aman)
-            new_df = new_df.merge(cluster_info[['cluster', 'label', 'severity_score']], on='cluster', how='left')
+            if 'label' in cluster_info.columns:
+                new_df = new_df.merge(cluster_info[['cluster', 'label', 'severity_score']], on='cluster', how='left')
+            else:
+                st.warning("Kolom 'label' tidak ditemukan di cluster_info. Menambahkan severity_score saja.")
+                new_df = new_df.merge(cluster_info[['cluster', 'severity_score']], on='cluster', how='left')
+                new_df['label'] = 'Unknown'
             
             st.success("Klasifikasi Selesai!")
             st.dataframe(new_df.head())
