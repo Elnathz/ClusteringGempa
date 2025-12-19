@@ -99,10 +99,37 @@ for _, row in data_to_plot.iterrows():
 st_folium(m, width=1000, height=500)
 
 # Info Cluster
-st.subheader("Informasi Pusat Klaster (Centroids)")
-st.dataframe(cluster_info)
+st.subheader("📊 Understanding the Earthquake Clusters")
 
-st.divider()
+with st.expander("What do these clusters mean?"):
+    st.write("""
+    Machine learning has grouped these earthquakes based on their physical characteristics. 
+    Because this is 'Clustering', the model finds patterns on its own rather than 
+    following strict human rules.
+    """)
+    
+    # Mapping colors to cluster IDs for the legend
+    colors_hex = {0: 'red', 1: 'blue', 2: 'green', 3: 'purple', 4: 'orange'}
+    
+    col1, col2 = st.columns(2)
+    # cluster_info contains: latitude, longitude, mag, depth, cluster, severity_score
+    for i, row in cluster_info.iterrows():
+        target_col = col1 if i % 2 == 0 else col2
+        with target_col:
+            c_id = int(row['cluster'])
+            severity = row['severity_score']
+            
+            # Risk labels based on the severity_score in your CSV
+            risk_level = "High" if severity > 1.2 else "Moderate" if severity > 1.0 else "Low"
+            
+            st.markdown(f"""
+            <div style="border-left: 5px solid {colors_hex.get(c_id, 'gray')}; padding-left: 10px; margin-bottom: 10px;">
+                <strong>Cluster {c_id}</strong> (Risk Level: {risk_level})<br>
+                Avg Magnitude: {row['mag']:.2f}<br>
+                Avg Depth: {row['depth']:.1f} km<br>
+                <em>Severity Score: {severity:.3f}</em>
+            </div>
+            """, unsafe_allow_html=True)
 
 # --- 4. Sidebar: Predict Single Point ---
 st.sidebar.markdown("---")
@@ -112,17 +139,34 @@ p_lon = st.sidebar.number_input("Lon", value=0.0)
 p_mag = st.sidebar.number_input("Mag", value=5.0)
 p_dep = st.sidebar.number_input("Depth (km)", value=10.0)
 
+# Replace the 'if st.sidebar.button("Prediksi Titik")' block:
 if st.sidebar.button("Prediksi Titik"):
-    # Fitur harus urut: lat, lon, mag, depth (sesuai training)
+    # Features must be in order: lat, lon, mag, depth
     arr = np.array([[p_lat, p_lon, p_mag, p_dep]])
     try:
-        clust = pipeline.named_steps['kmeans'].predict(pipeline.named_steps['scaler'].transform(arr))[0]
-        # Ambil info dari tabel cluster_info
-        info = cluster_info[cluster_info['cluster'] == clust].iloc[0].to_dict()
-        st.sidebar.success(f"Hasil: Klaster {clust}")
-        st.sidebar.json(info)
+        # Use the pipeline steps: scaler then kmeans
+        scaled_feat = pipeline.named_steps['scaler'].transform(arr)
+        clust = pipeline.named_steps['kmeans'].predict(scaled_feat)[0]
+        
+        # Get the info for this specific cluster from cluster_info.csv
+        info = cluster_info[cluster_info['cluster'] == clust].iloc[0]
+        
+        st.sidebar.success(f"📍 Prediction: Cluster {clust}")
+        
+        st.sidebar.markdown(f"""
+        **Analysis:**
+        This earthquake is categorized as **Cluster {clust}**. 
+        Historically, events in this group have a severity score of **{info['severity_score']:.2f}**.
+        """)
+        
+        # Public-facing education on depth
+        if p_dep < 70:
+            st.sidebar.warning("⚠️ **Shallow Earthquake:** These occur closer to the surface and are often felt more intensely.")
+        else:
+            st.sidebar.info("ℹ️ **Deep Earthquake:** These are often felt over a wider area but typically cause less surface damage.")
+            
     except Exception as e:
-        st.sidebar.error(f"Gagal memprediksi: {e}")
+        st.sidebar.error(f"Error making prediction: {e}")
 
 # --- 5. Sidebar: Upload New Data (Fitur Baru) ---
 st.sidebar.markdown("---")
@@ -161,6 +205,12 @@ if uploaded_file is not None:
             st.success("Klasifikasi Selesai!")
             st.dataframe(new_df.head())
             
+            #Information above folium map 
+            st.info(f"💡 **Map Tip:** The markers are color-coded by cluster. Zoom in to see individual events, or zoom out to see high-density 'hotspots' across the region.")
+
+            # Add a progress/status bar for the 2000 point limit 
+            if len(filtered) > MAX_POINTS:
+                st.warning(f"Displaying the first {MAX_POINTS} out of {len(filtered)} earthquakes to maintain app speed. Use the sidebar filters to narrow down your search.")
             # Visualisasi Data Upload (Simple Folium Map)
             if st.checkbox("Tampilkan Peta Data Upload"):
                 m_new = folium.Map(location=[new_df['latitude'].mean(), new_df['longitude'].mean()], zoom_start=4)
