@@ -4,9 +4,9 @@ import numpy as np
 import joblib
 import plotly.express as px
 
-st.set_page_config(layout="wide", page_title="Earthquake Clustering")
+st.set_page_config(layout="wide", page_title="Earthquake Clustering v2")
 
-st.title("🌋 Earthquake Clustering & Severity Viewer")
+st.title("🌋 Earthquake Clustering & Severity Viewer v2")
 
 @st.cache_data
 def load_data():
