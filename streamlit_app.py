@@ -6,9 +6,9 @@ import folium
 from folium.plugins import MarkerCluster
 from streamlit_folium import st_folium
 
-st.set_page_config(layout="wide", page_title="Earthquake Clustering v2")
+st.set_page_config(layout="wide", page_title="Earthquake Clustering")
 
-st.title("🌋 Earthquake Clustering & Severity Viewer v2")
+st.title("🌋 Earthquake Clustering & Severity Viewer")
 
 # --- 1. Load Data & Models ---
 @st.cache_data
