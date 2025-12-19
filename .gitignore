@@ -1,3 +1,2 @@
-venv
-earthquakes_with_cluster.csv
-earthquakes_with_cluster
+venv/
+*.csv
