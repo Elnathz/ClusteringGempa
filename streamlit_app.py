@@ -107,10 +107,114 @@ else:
 m = folium.Map(location=[center_lat, center_lon], zoom_start=5, prefer_canvas=True)
 marker_cluster = MarkerCluster().add_to(m)
 
-MAX_POINTS = 2000
-data_to_plot = filtered.head(MAX_POINTS)
+# --- 3.1 Advanced Filters (Data Sampling) ---
+st.sidebar.markdown("---")
+st.sidebar.subheader("🎚️ Atur Jumlah Data")
 
-if len(filtered) > MAX_POINTS:
+total_filtered = len(filtered)
+# Default 2000 or total if less than 2000
+default_max = 2000
+max_val_slider = total_filtered if total_filtered > 2000 else 2000
+min_val_slider = 2000
+
+max_samples = st.sidebar.slider(
+    "Jumlah Data Ditampilkan (Max)",
+    min_value=min_val_slider,
+    max_value=max_val_slider if max_val_slider > min_val_slider else min_val_slider + 1000, # Fallback to avoid error if total < 2000
+    value=default_max if default_max <= max_val_slider else max_val_slider,
+    step=100,
+    help="Atur berapa banyak data yang ingin ditampilkan di peta. Batas minimal 2.000."
+)
+
+# Balanced Sampling Logic (Water Filling Algorithm)
+if total_filtered > max_samples:
+    st.info(f"ℹ️ Mengambil {max_samples} sampel data secara merata (Water Filling) dari {total_filtered} data.")
+    
+    def balanced_sample_water_filling(df, n_samples, cluster_col='cluster'):
+        """
+        Mengambil sampel dengan metode Water Filling:
+        1. Target awal dibagi rata.
+        2. Jika ada cluster yang kurang dari target, ambil semua.
+        3. Sisa kuota didistribusikan ulang ke cluster yang masih punya sisa data.
+        """
+        unique_c = df[cluster_col].unique()
+        n_c = len(unique_c)
+        
+        # Simpan data per cluster
+        clusters = {c: df[df[cluster_col] == c] for c in unique_c}
+        
+        # Sisa kuota yang harus dipenuhi
+        quota_left = n_samples
+        
+        # Cluster yang masih 'aktif' (bisa diambil datanya)
+        active_clusters = list(unique_c)
+        
+        sampled_indices = []
+        
+        while quota_left > 0 and active_clusters:
+            # Target per cluster aktif saat ini
+            target_per_cluster = quota_left // len(active_clusters)
+            # Jika hasil bagi 0 (karena quota < n_active), set min 1 agar jalan terus sampai habis
+            if target_per_cluster == 0: 
+                target_per_cluster = 1
+            
+            # List untuk mencatat cluster yang "habis" di putaran ini
+            clusters_exhausted = []
+            
+            # Hitung alokasi putaran ini agar tidak 'over' quota total
+            # (Mencegah masalah pembulatan)
+            allocated_this_round = 0
+            
+            for c in active_clusters:
+                if quota_left <= 0: break
+                
+                # Data yang BELUM diambil di cluster ini
+                # (Kita butuh cara efisien, misal tracking index. 
+                #  Tapi karena dataframe di-slice di awal (clusters dict), 
+                #  kita bisa tracking berapa yang SUDAH diambil dari setiap DF?)
+                # Simplifikasi: Kita ambil sample baru dari sisa, lalu update df di dictionary
+                
+                current_df = clusters[c]
+                n_available = len(current_df)
+                
+                # Target ambil sesi ini
+                n_take = min(n_available, target_per_cluster)
+                
+                # Pastikan tidak mengambil lebih dari sisa quota total
+                n_take = min(n_take, quota_left)
+                
+                if n_take > 0:
+                    taken = current_df.sample(n=n_take, random_state=42)
+                    sampled_indices.extend(taken.index.tolist())
+                    
+                    # Kurangi quota global
+                    quota_left -= n_take
+                    
+                    # Update sisa data di cluster ini (buang yang sudah diambil)
+                    clusters[c] = current_df.drop(taken.index)
+                    
+                    # Cek apakah cluster ini sudah habis?
+                    if len(clusters[c]) == 0:
+                        clusters_exhausted.append(c)
+                else:
+                    # Jika 0 (misal cluster kosong), mark exhausted
+                    clusters_exhausted.append(c)
+            
+            # Hapus cluster yang sudah habis dari active list
+            for c in clusters_exhausted:
+                if c in active_clusters:
+                    active_clusters.remove(c)
+                    
+        # Kembalikan dataframe berdasarkan index yang terpilih
+        return df.loc[sampled_indices]
+
+    data_to_plot = balanced_sample_water_filling(filtered, max_samples)
+
+else:
+    # Jika data kurang dari batas max, tampilkan semua
+    data_to_plot = filtered
+
+if False: # Old logic disabled
     st.warning(f"⚠️ Menampilkan {MAX_POINTS} data teratas dari {len(filtered)} total data demi performa peta.")
 
 colors = ['red', 'blue', 'green', 'purple', 'orange', 'darkred', 'cadetblue', 'black']
@@ -159,13 +263,14 @@ cluster_info_sorted = cluster_info.sort_values(by='cluster', ascending=True)
 for _, row in cluster_info_sorted.iterrows():
     c_id = int(row['cluster'])
     severity = row['severity_score']
-    risk = "High" if severity > 1.2 else "Moderate" if severity > 1.0 else "Low"
+    # FIX: Gunakan label dari CSV
+    risk = row['label']
     c_color = colors_hex.get(c_id, 'gray')
     
     legend_html += f"""
     <div style="margin-bottom: 3px; color: black;">
         <i style="background: {c_color}; width: 12px; height: 12px; display: inline-block; border-radius: 50%; margin-right: 5px;"></i>
-        Cluster {c_id}: <b>{risk}</b> Risk
+        Cluster {c_id}: <b>{risk}</b>
     </div>
     """
 legend_html += "</div>"
@@ -195,7 +300,8 @@ with st.expander("Klik untuk melihat detail karakteristik tiap klaster", expande
         with target_col:
             c_id = int(row['cluster'])
             severity = row['severity_score']
-            risk_level = "High" if severity > 1.2 else "Moderate" if severity > 1.0 else "Low"
+            # FIX: Gunakan label dari CSV, jangan hitung ulang manual
+            risk_level = row['label'] 
             color = colors_hex.get(c_id, 'gray')
             
             st.markdown(f"""
@@ -234,6 +340,7 @@ if st.sidebar.button("Prediksi"):
         
         st.sidebar.success(f"Masuk ke **Cluster {clust}**")
         st.sidebar.markdown(f"**Severity Score:** {info['severity_score']:.3f}")
+        st.sidebar.markdown(f"**Label:** {info['label']}")
     except Exception as e:
         st.sidebar.error(f"Error: {e}")
 
