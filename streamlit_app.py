@@ -7,14 +7,26 @@ import textwrap  # <--- Library penolong untuk fix HTML
 from folium.plugins import MarkerCluster, BeautifyIcon
 from streamlit_folium import st_folium
 
+# --- 1. Page Config ---
 st.set_page_config(layout="wide", page_title="Earthquake Clustering")
 
-st.title("🌋 Earthquake Clustering & Severity Viewer")
+# --- CSS: Wide Mode tapi Rapi ---
+st.markdown("""
+    <style>
+        .block-container {
+            padding-top: 2rem;
+            padding-bottom: 2rem;
+            padding-left: 1rem;
+            padding-right: 1rem;
+            max-width: 100%;
+        }
+        h1 { margin-bottom: 0rem; }
+    </style>
+""", unsafe_allow_html=True)
 
-# --- 1. Load Data & Models ---
+# --- 2. Load Data & Models ---
 @st.cache_data
 def load_data():
-    # Perbaikan: Menggunakan 'time' bukan 'datetime' sesuai error log
     df = pd.read_csv("earthquakes_with_cluster.csv")
     df['time'] = pd.to_datetime(df['time'], errors='coerce')
     return df
@@ -22,11 +34,9 @@ def load_data():
 @st.cache_resource
 def load_model():
     pipeline = joblib.load("kmeans_pipeline.joblib")
-    # Menggunakan nama variabel konsisten
     cluster_info = pd.read_csv("cluster_info.csv")
     return pipeline, cluster_info
 
-# Load awal
 try:
     df = load_data()
     pipeline, cluster_info = load_model()
@@ -49,21 +59,19 @@ if st.sidebar.button("🔄 Reset Filter"):
 min_date = st.sidebar.date_input("Tanggal awal", df['time'].min().date(), key='date_start')
 max_date = st.sidebar.date_input("Tanggal akhir", df['time'].max().date(), key='date_end')
 
-# Handle kolom 'mag' vs 'magnitude'
 mag_col = 'mag' if 'mag' in df.columns else 'magnitude'
 mag_min, mag_max = st.sidebar.slider("Rentang Magnitudo", 
                                      float(df[mag_col].min()), float(df[mag_col].max()), 
                                      (float(df[mag_col].min()), float(df[mag_col].max())),
                                      key='mag_range')
 
-# Handle depth
 depth_min_val = float(df['depth'].min()) if not df['depth'].isna().all() else 0.0
 depth_max_val = float(df['depth'].max()) if not df['depth'].isna().all() else 700.0
 depth_min, depth_max = st.sidebar.slider("Rentang Kedalaman (km)", depth_min_val, depth_max_val, 
                                         (depth_min_val, depth_max_val),
                                         key='depth_range')
 
-# Apply Filter
+# Filter Logic
 filtered = df[
     (df['time'].dt.date >= min_date) &
     (df['time'].dt.date <= max_date) &
@@ -72,17 +80,31 @@ filtered = df[
 if not df['depth'].isna().all():
     filtered = filtered[(filtered['depth'] >= depth_min) & (filtered['depth'] <= depth_max)]
 
-st.markdown(f"Menampilkan **{len(filtered)}** data gempa (Main Dataset)")
+# --- 4. Main Layout (Top Section) ---
+st.title("🌋 Earthquake Clustering Viewer")
+st.markdown("Visualisasi persebaran gempa bumi dan tingkat keparahannya menggunakan K-Means Clustering.")
 
-# --- 3. Main Map Visualization (Folium + MarkerCluster) ---
-# Menggunakan Folium agar fitur 'Zoom Out = Mengumpul' berfungsi
+# Metrics
+m1, m2, m3 = st.columns(3)
+with m1:
+    st.metric("Total Kejadian (Filtered)", f"{len(filtered):,}")
+with m2:
+    avg_mag = filtered[mag_col].mean() if not filtered.empty else 0
+    st.metric("Rata-rata Magnitudo", f"{avg_mag:.2f}")
+with m3:
+    max_mag = filtered[mag_col].max() if not filtered.empty else 0
+    st.metric("Magnitudo Tertinggi", f"{max_mag:.2f}")
+
+st.divider()
+
+# --- 5. Map Visualization ---
 if not filtered.empty:
     center_lat = filtered['latitude'].mean()
     center_lon = filtered['longitude'].mean()
 else:
     center_lat, center_lon = 0, 0
 
-m = folium.Map(location=[center_lat, center_lon], zoom_start=5)
+m = folium.Map(location=[center_lat, center_lon], zoom_start=5, prefer_canvas=True)
 marker_cluster = MarkerCluster().add_to(m)
 
 # --- 3.1 Advanced Filters (Data Sampling) ---
@@ -203,7 +225,6 @@ for _, row in data_to_plot.iterrows():
     c_id = int(row['cluster'])
     color = colors[c_id % len(colors)]
     
-    # Tooltip info
     popup_txt = f"""
     <b>Mag:</b> {row[mag_col]}<br>
     <b>Depth:</b> {row['depth']} km<br>
@@ -303,14 +324,14 @@ with st.expander("Klik untuk melihat detail karakteristik tiap klaster", expande
 
 # --- 7. Sidebar Prediction & Upload ---
 st.sidebar.markdown("---")
-st.sidebar.header("Prediksi Satu Titik")
-p_lat = st.sidebar.number_input("Lat", value=0.0)
-p_lon = st.sidebar.number_input("Lon", value=0.0)
+st.sidebar.header("⚡ Prediksi Cepat")
+
+p_lat = st.sidebar.number_input("Lat", value=0.0, format="%.4f")
+p_lon = st.sidebar.number_input("Lon", value=0.0, format="%.4f")
 p_mag = st.sidebar.number_input("Mag", value=5.0)
 p_dep = st.sidebar.number_input("Depth (km)", value=10.0)
 
-if st.sidebar.button("Prediksi Titik"):
-    # Fitur harus urut: lat, lon, mag, depth (sesuai training)
+if st.sidebar.button("Prediksi"):
     arr = np.array([[p_lat, p_lon, p_mag, p_dep]])
     try:
         scaled_feat = pipeline.named_steps['scaler'].transform(arr)
@@ -321,9 +342,8 @@ if st.sidebar.button("Prediksi Titik"):
         st.sidebar.markdown(f"**Severity Score:** {info['severity_score']:.3f}")
         st.sidebar.markdown(f"**Label:** {info['label']}")
     except Exception as e:
-        st.sidebar.error(f"Gagal memprediksi: {e}")
+        st.sidebar.error(f"Error: {e}")
 
-# --- 5. Sidebar: Upload New Data (Fitur Baru) ---
 st.sidebar.markdown("---")
 with st.sidebar.expander("📂 Upload Data Baru"):
     uploaded_file = st.file_uploader("Upload CSV/TSV", type=['csv', 'tsv'])
