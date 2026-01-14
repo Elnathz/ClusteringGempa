@@ -35,6 +35,8 @@ def load_data():
 def load_model():
     pipeline = joblib.load("kmeans_pipeline.joblib")
     cluster_info = pd.read_csv("cluster_info.csv")
+    # Remove any empty rows to prevent KeyError
+    cluster_info = cluster_info.dropna(subset=['cluster', 'label'])
     return pipeline, cluster_info
 
 try:
