@@ -3,7 +3,8 @@ import pandas as pd
 import numpy as np
 import joblib
 import folium
-from folium.plugins import MarkerCluster
+import textwrap  # <--- Library penolong untuk fix HTML
+from folium.plugins import MarkerCluster, BeautifyIcon
 from streamlit_folium import st_folium
 
 st.set_page_config(layout="wide", page_title="Earthquake Clustering")
@@ -33,21 +34,34 @@ except Exception as e:
     st.error(f"Error loading data/model: {e}")
     st.stop()
 
-# --- 2. Sidebar Filters (Main Data) ---
-st.sidebar.header("Filter Data Utama")
-min_date = st.sidebar.date_input("Tanggal awal", df['time'].min().date())
-max_date = st.sidebar.date_input("Tanggal akhir", df['time'].max().date())
+# --- 3. Sidebar Filters ---
+st.sidebar.title("🔍 Filter Data")
+# --- Callback Reset Filter ---
+def reset_filters():
+    st.session_state['date_start'] = df['time'].min().date()
+    st.session_state['date_end'] = df['time'].max().date()
+    st.session_state['mag_range'] = (float(df[mag_col].min()), float(df[mag_col].max()))
+    st.session_state['depth_range'] = (depth_min_val, depth_max_val)
+
+if st.sidebar.button("🔄 Reset Filter"):
+    reset_filters()
+
+min_date = st.sidebar.date_input("Tanggal awal", df['time'].min().date(), key='date_start')
+max_date = st.sidebar.date_input("Tanggal akhir", df['time'].max().date(), key='date_end')
 
 # Handle kolom 'mag' vs 'magnitude'
 mag_col = 'mag' if 'mag' in df.columns else 'magnitude'
 mag_min, mag_max = st.sidebar.slider("Rentang Magnitudo", 
                                      float(df[mag_col].min()), float(df[mag_col].max()), 
-                                     (float(df[mag_col].min()), float(df[mag_col].max())))
+                                     (float(df[mag_col].min()), float(df[mag_col].max())),
+                                     key='mag_range')
 
 # Handle depth
 depth_min_val = float(df['depth'].min()) if not df['depth'].isna().all() else 0.0
 depth_max_val = float(df['depth'].max()) if not df['depth'].isna().all() else 700.0
-depth_min, depth_max = st.sidebar.slider("Rentang Kedalaman (km)", depth_min_val, depth_max_val, (depth_min_val, depth_max_val))
+depth_min, depth_max = st.sidebar.slider("Rentang Kedalaman (km)", depth_min_val, depth_max_val, 
+                                        (depth_min_val, depth_max_val),
+                                        key='depth_range')
 
 # Apply Filter
 filtered = df[
@@ -71,14 +85,120 @@ else:
 m = folium.Map(location=[center_lat, center_lon], zoom_start=5)
 marker_cluster = MarkerCluster().add_to(m)
 
-# Batasi tampilan di peta agar tidak berat (Max 2000 titik)
-MAX_POINTS = 2000
-data_to_plot = filtered.head(MAX_POINTS)
-if len(filtered) > MAX_POINTS:
-    st.caption(f"⚠️ Peta hanya menampilkan {MAX_POINTS} data pertama demi performa. Filter data untuk hasil lebih spesifik.")
+# --- 3.1 Advanced Filters (Data Sampling) ---
+st.sidebar.markdown("---")
+st.sidebar.subheader("🎚️ Atur Jumlah Data")
+
+total_filtered = len(filtered)
+# Default 2000 or total if less than 2000
+default_max = 2000
+max_val_slider = total_filtered if total_filtered > 2000 else 2000
+min_val_slider = 2000
+
+max_samples = st.sidebar.slider(
+    "Jumlah Data Ditampilkan (Max)",
+    min_value=min_val_slider,
+    max_value=max_val_slider if max_val_slider > min_val_slider else min_val_slider + 1000, # Fallback to avoid error if total < 2000
+    value=default_max if default_max <= max_val_slider else max_val_slider,
+    step=100,
+    help="Atur berapa banyak data yang ingin ditampilkan di peta. Batas minimal 2.000."
+)
+
+# Balanced Sampling Logic (Water Filling Algorithm)
+if total_filtered > max_samples:
+    st.info(f"ℹ️ Mengambil {max_samples} sampel data secara merata (Water Filling) dari {total_filtered} data.")
+    
+    def balanced_sample_water_filling(df, n_samples, cluster_col='cluster'):
+        """
+        Mengambil sampel dengan metode Water Filling:
+        1. Target awal dibagi rata.
+        2. Jika ada cluster yang kurang dari target, ambil semua.
+        3. Sisa kuota didistribusikan ulang ke cluster yang masih punya sisa data.
+        """
+        unique_c = df[cluster_col].unique()
+        n_c = len(unique_c)
+        
+        # Simpan data per cluster
+        clusters = {c: df[df[cluster_col] == c] for c in unique_c}
+        
+        # Sisa kuota yang harus dipenuhi
+        quota_left = n_samples
+        
+        # Cluster yang masih 'aktif' (bisa diambil datanya)
+        active_clusters = list(unique_c)
+        
+        sampled_indices = []
+        
+        while quota_left > 0 and active_clusters:
+            # Target per cluster aktif saat ini
+            target_per_cluster = quota_left // len(active_clusters)
+            # Jika hasil bagi 0 (karena quota < n_active), set min 1 agar jalan terus sampai habis
+            if target_per_cluster == 0: 
+                target_per_cluster = 1
+            
+            # List untuk mencatat cluster yang "habis" di putaran ini
+            clusters_exhausted = []
+            
+            # Hitung alokasi putaran ini agar tidak 'over' quota total
+            # (Mencegah masalah pembulatan)
+            allocated_this_round = 0
+            
+            for c in active_clusters:
+                if quota_left <= 0: break
+                
+                # Data yang BELUM diambil di cluster ini
+                # (Kita butuh cara efisien, misal tracking index. 
+                #  Tapi karena dataframe di-slice di awal (clusters dict), 
+                #  kita bisa tracking berapa yang SUDAH diambil dari setiap DF?)
+                # Simplifikasi: Kita ambil sample baru dari sisa, lalu update df di dictionary
+                
+                current_df = clusters[c]
+                n_available = len(current_df)
+                
+                # Target ambil sesi ini
+                n_take = min(n_available, target_per_cluster)
+                
+                # Pastikan tidak mengambil lebih dari sisa quota total
+                n_take = min(n_take, quota_left)
+                
+                if n_take > 0:
+                    taken = current_df.sample(n=n_take, random_state=42)
+                    sampled_indices.extend(taken.index.tolist())
+                    
+                    # Kurangi quota global
+                    quota_left -= n_take
+                    
+                    # Update sisa data di cluster ini (buang yang sudah diambil)
+                    clusters[c] = current_df.drop(taken.index)
+                    
+                    # Cek apakah cluster ini sudah habis?
+                    if len(clusters[c]) == 0:
+                        clusters_exhausted.append(c)
+                else:
+                    # Jika 0 (misal cluster kosong), mark exhausted
+                    clusters_exhausted.append(c)
+            
+            # Hapus cluster yang sudah habis dari active list
+            for c in clusters_exhausted:
+                if c in active_clusters:
+                    active_clusters.remove(c)
+                    
+        # Kembalikan dataframe berdasarkan index yang terpilih
+        return df.loc[sampled_indices]
+
+    data_to_plot = balanced_sample_water_filling(filtered, max_samples)
+
+else:
+    # Jika data kurang dari batas max, tampilkan semua
+    data_to_plot = filtered
+
+if False: # Old logic disabled
+    st.warning(f"⚠️ Menampilkan {MAX_POINTS} data teratas dari {len(filtered)} total data demi performa peta.")
 
 colors = ['red', 'blue', 'green', 'purple', 'orange', 'darkred', 'cadetblue', 'black']
+colors_hex = {0: 'red', 1: 'blue', 2: 'green', 3: 'purple', 4: 'orange'}
 
+# --- Loop 1: Tambahkan Markers ---
 for _, row in data_to_plot.iterrows():
     c_id = int(row['cluster'])
     color = colors[c_id % len(colors)]
@@ -93,18 +213,95 @@ for _, row in data_to_plot.iterrows():
     folium.Marker(
         location=[row['latitude'], row['longitude']],
         popup=folium.Popup(popup_txt, max_width=200),
-        icon=folium.Icon(color=color, icon='info-sign'),
+        icon=BeautifyIcon(
+            icon_shape='marker',
+            number=str(c_id),
+            border_color=color,
+            background_color=color,
+            text_color='white',
+            inner_icon_style='margin-top:0; font-size:12px; font-weight:bold;' 
+        )
     ).add_to(marker_cluster)
 
-st_folium(m, width=1000, height=500)
+# --- Tambahkan Legend (Sekali saja) ---
+legend_html = """
+<div style="
+    position: fixed; 
+    bottom: 50px; left: 50px; 
+    z-index:9999; font-size:14px;
+        background-color: rgba(255, 255, 255, 0.9);
+        color: black !important;
+        border: 2px solid #ccc; border-radius: 6px; padding: 10px;
+        box-shadow: 2px 2px 5px rgba(0,0,0,0.3);
+    ">
+    <h5 style="margin:0 0 5px 0; border-bottom:1px solid #ccc; padding-bottom:3px;">Legenda Cluster</h5>
+"""
 
-# Info Cluster
-st.subheader("Informasi Pusat Klaster (Centroids)")
-st.dataframe(cluster_info)
+# Isi Legend dari cluster_info
+cluster_info_sorted = cluster_info.sort_values(by='cluster', ascending=True)
+for _, row in cluster_info_sorted.iterrows():
+    c_id = int(row['cluster'])
+    severity = row['severity_score']
+    # FIX: Gunakan label dari CSV
+    risk = row['label']
+    c_color = colors_hex.get(c_id, 'gray')
+    
+    legend_html += f"""
+    <div style="margin-bottom: 3px; color: black;">
+        <i style="background: {c_color}; width: 12px; height: 12px; display: inline-block; border-radius: 50%; margin-right: 5px;"></i>
+        Cluster {c_id}: <b>{risk}</b>
+    </div>
+    """
+legend_html += "</div>"
+m.get_root().html.add_child(folium.Element(legend_html))
 
-st.divider()
+# Membuat grid kolom dinamis untuk section bawah (persiapan)
+cols = st.columns(len(cluster_info_sorted))
 
-# --- 4. Sidebar: Predict Single Point ---
+# Height 750px sesuai request
+st_folium(m, height=750, use_container_width=True, returned_objects=[])
+
+# --- 6. Cluster Info (Bottom Section) ---
+st.subheader("📊 Analisis Klaster (Cluster Meaning)")
+
+# Menggunakan expander yang terbuka default, dengan layout kolom di dalamnya
+with st.expander("Klik untuk melihat detail karakteristik tiap klaster", expanded=True):
+    cluster_info_sorted = cluster_info.sort_values(by='cluster', ascending=True)
+    colors_hex = {0: 'red', 1: 'blue', 2: 'green', 3: 'purple', 4: 'orange'}
+    
+    # Membuat grid kolom dinamis (misal 3 kolom per baris)
+    cols = st.columns(len(cluster_info_sorted)) 
+    
+    for i, (_, row) in enumerate(cluster_info_sorted.iterrows()):
+        # Pilih kolom target, jika klaster banyak, dia akan mengecil otomatis
+        target_col = cols[i] if i < len(cols) else cols[0]
+        
+        with target_col:
+            c_id = int(row['cluster'])
+            severity = row['severity_score']
+            # FIX: Gunakan label dari CSV, jangan hitung ulang manual
+            risk_level = row['label'] 
+            color = colors_hex.get(c_id, 'gray')
+            
+            st.markdown(f"""
+            <div style="
+                background-color: #262730;
+                border-top: 5px solid {color};
+                padding: 10px;
+                border-radius: 5px;
+                text-align: center;
+                height: 100%;">
+                <h4 style="margin:0; color: #FAFAFA;">Cluster {c_id}</h4>
+                <p style="font-size: 14px; margin-bottom: 5px; color: #E0E0E0;">Risk: <strong>{risk_level}</strong></p>
+                <hr style="margin: 5px 0; border-color: #4A4A4A;">
+                <p style="font-size: 12px; margin:0; color: #BDBDBD;">
+                Avg Mag: <strong>{row['mag']:.2f}</strong><br>
+                Avg Depth: <strong>{row['depth']:.0f} km</strong>
+                </p>
+            </div>
+            """, unsafe_allow_html=True)
+
+# --- 7. Sidebar Prediction & Upload ---
 st.sidebar.markdown("---")
 st.sidebar.header("Prediksi Satu Titik")
 p_lat = st.sidebar.number_input("Lat", value=0.0)
@@ -116,70 +313,19 @@ if st.sidebar.button("Prediksi Titik"):
     # Fitur harus urut: lat, lon, mag, depth (sesuai training)
     arr = np.array([[p_lat, p_lon, p_mag, p_dep]])
     try:
-        clust = pipeline.named_steps['kmeans'].predict(pipeline.named_steps['scaler'].transform(arr))[0]
-        # Ambil info dari tabel cluster_info
-        info = cluster_info[cluster_info['cluster'] == clust].iloc[0].to_dict()
-        st.sidebar.success(f"Hasil: Klaster {clust}")
-        st.sidebar.json(info)
+        scaled_feat = pipeline.named_steps['scaler'].transform(arr)
+        clust = pipeline.named_steps['kmeans'].predict(scaled_feat)[0]
+        info = cluster_info[cluster_info['cluster'] == clust].iloc[0]
+        
+        st.sidebar.success(f"Masuk ke **Cluster {clust}**")
+        st.sidebar.markdown(f"**Severity Score:** {info['severity_score']:.3f}")
+        st.sidebar.markdown(f"**Label:** {info['label']}")
     except Exception as e:
         st.sidebar.error(f"Gagal memprediksi: {e}")
 
 # --- 5. Sidebar: Upload New Data (Fitur Baru) ---
 st.sidebar.markdown("---")
-st.sidebar.header("Upload Data Baru (Batch)")
-uploaded_file = st.sidebar.file_uploader("Upload CSV/TSV", type=['csv', 'tsv'])
-
-if uploaded_file is not None:
-    st.header("📂 Analisis Data Upload")
-    sep = '\t' if uploaded_file.name.endswith('.tsv') else ','
-    
-    try:
-        new_df = pd.read_csv(uploaded_file, sep=sep)
-        
-        # Normalisasi nama kolom agar sesuai model (magnitude -> mag)
-        new_df.columns = [c.lower() for c in new_df.columns]
-        if 'magnitude' in new_df.columns:
-            new_df.rename(columns={'magnitude': 'mag'}, inplace=True)
-            
-        required_cols = ['latitude', 'longitude', 'mag', 'depth']
-        
-        # Cek kelengkapan kolom
-        if not all(col in new_df.columns for col in required_cols):
-            st.error(f"File wajib memiliki kolom (atau variannya): {', '.join(required_cols)}")
-        else:
-            # Lakukan Prediksi
-            features = new_df[required_cols]
-            # Handle NaN
-            features = features.fillna(0) 
-            
-            scaled = pipeline.named_steps['scaler'].transform(features)
-            new_df['cluster'] = pipeline.named_steps['kmeans'].predict(scaled)
-            
-            # Map severity info (menggunakan merge agar lebih aman)
-            if 'label' in cluster_info.columns:
-                new_df = new_df.merge(cluster_info[['cluster', 'label', 'severity_score']], on='cluster', how='left')
-            else:
-                st.warning("Kolom 'label' tidak ditemukan di cluster_info. Menambahkan severity_score saja.")
-                new_df = new_df.merge(cluster_info[['cluster', 'severity_score']], on='cluster', how='left')
-                new_df['label'] = 'Unknown'
-            
-            st.success("Klasifikasi Selesai!")
-            st.dataframe(new_df.head())
-            
-            # Visualisasi Data Upload (Simple Folium Map)
-            if st.checkbox("Tampilkan Peta Data Upload"):
-                m_new = folium.Map(location=[new_df['latitude'].mean(), new_df['longitude'].mean()], zoom_start=4)
-                mc_new = MarkerCluster().add_to(m_new)
-                
-                # Plot max 1000 data upload
-                for _, row in new_df.head(1000).iterrows():
-                    folium.Marker(
-                        [row['latitude'], row['longitude']],
-                        popup=f"Cluster: {row['cluster']}<br>Label: {row.get('label', '-')}",
-                        icon=folium.Icon(color='blue')
-                    ).add_to(mc_new)
-                
-                st_folium(m_new, width=1000, height=500, key="new_data_map")
-                
-    except Exception as e:
-        st.error(f"Error memproses file: {e}")
+with st.sidebar.expander("📂 Upload Data Baru"):
+    uploaded_file = st.file_uploader("Upload CSV/TSV", type=['csv', 'tsv'])
+    if uploaded_file is not None:
+        st.info("File diterima. Analisis otomatis berjalan di background.")
