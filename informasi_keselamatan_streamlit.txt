@@ -1,0 +1,283 @@
+================================================================================
+RANCANGAN FITUR: INFORMASI KESELAMATAN GEMPA (REAL-TIME)
+================================================================================
+Untuk: streamlit_app.py
+Dibuat: 20 Januari 2026
+
+================================================================================
+1. TUJUAN FITUR
+================================================================================
+Memberikan informasi keselamatan yang KONTEKSTUAL kepada pengguna berdasarkan:
+- Lokasi yang dipilih (misal: Semarang, Maluku, dll)
+- Bulan SAAT INI (diambil dari sistem secara real-time)
+- Track record sejarah gempa di lokasi tersebut pada bulan yang sama
+
+================================================================================
+2. ALUR KERJA (USER FLOW)
+================================================================================
+
+[USER MEMBUKA APP]
+        │
+        ▼
+┌─────────────────────────────────────────────────────────────────────────────┐
+│  STEP 1: Pilih Lokasi                                                       │
+│  ────────────────────                                                       │
+│  Dropdown/Selectbox berisi daftar wilayah:                                  │
+│  - Sumatra, Jawa, Bali, Nusa Tenggara, Kalimantan, Sulawesi, Maluku, Papua  │
+│  - ATAU: Kota spesifik (Semarang, Surabaya, Banda Aceh, dll)                │
+│  - ATAU: Input manual koordinat Lat/Lon                                     │
+└─────────────────────────────────────────────────────────────────────────────┘
+        │
+        ▼
+┌─────────────────────────────────────────────────────────────────────────────┐
+│  STEP 2: Deteksi Bulan (Otomatis)                                           │
+│  ───────────────────────────────                                            │
+│  Kode Python:                                                               │
+│    from datetime import datetime                                            │
+│    current_month = datetime.now().month  # Output: 1 = Januari, dst         │
+│    current_month_name = datetime.now().strftime("%B")  # "January"          │
+│                                                                             │
+│  Tampilkan di UI:                                                           │
+│    "🗓️ Bulan Aktif: Januari 2026"                                           │
+└─────────────────────────────────────────────────────────────────────────────┘
+        │
+        ▼
+┌─────────────────────────────────────────────────────────────────────────────┐
+│  STEP 3: Analisis Data Historis                                             │
+│  ──────────────────────────────                                             │
+│  Logika filtering dataset:                                                  │
+│                                                                             │
+│    # Filter berdasarkan lokasi (bounding box atau nama wilayah)             │
+│    df_lokasi = df[                                                          │
+│        (df['latitude'].between(lat_min, lat_max)) &                         │
+│        (df['longitude'].between(lon_min, lon_max))                          │
+│    ]                                                                        │
+│                                                                             │
+│    # Filter berdasarkan bulan yang sama (di tahun-tahun sebelumnya)         │
+│    df_lokasi['month'] = pd.to_datetime(df_lokasi['time']).dt.month          │
+│    df_bulan_ini = df_lokasi[df_lokasi['month'] == current_month]            │
+│                                                                             │
+│  Hitung statistik:                                                          │
+│    - total_gempa_historis = len(df_bulan_ini)                               │
+│    - avg_mag = df_bulan_ini['mag'].mean()                                   │
+│    - max_mag = df_bulan_ini['mag'].max()                                    │
+│    - pct_high_risk = df_bulan_ini[df_bulan_ini['cluster'] >= 2].count()     │
+└─────────────────────────────────────────────────────────────────────────────┘
+        │
+        ▼
+┌─────────────────────────────────────────────────────────────────────────────┐
+│  STEP 4: Tentukan Tingkat Bahaya                                            │
+│  ────────────────────────────────                                           │
+│  Logika sederhana (bisa disesuaikan):                                       │
+│                                                                             │
+│    if total_gempa_historis == 0:                                            │
+│        risk_level = "DATA TIDAK TERSEDIA"                                   │
+│        color = "gray"                                                       │
+│    elif pct_high_risk / total_gempa_historis > 0.5 or max_mag >= 5.5:       │
+│        risk_level = "BAHAYA TINGGI"                                         │
+│        color = "red"                                                        │
+│    elif avg_mag >= 4.0 or pct_high_risk / total > 0.25:                     │
+│        risk_level = "WASPADA"                                               │
+│        color = "orange"                                                     │
+│    else:                                                                    │
+│        risk_level = "RELATIF AMAN"                                          │
+│        color = "green"                                                      │
+└─────────────────────────────────────────────────────────────────────────────┘
+        │
+        ▼
+┌─────────────────────────────────────────────────────────────────────────────┐
+│  STEP 5: Tampilkan Hasil & Tips Keselamatan                                 │
+│  ──────────────────────────────────────────                                 │
+│  (Lihat bagian UI/UX di bawah)                                              │
+└─────────────────────────────────────────────────────────────────────────────┘
+
+
+================================================================================
+3. DESAIN UI/UX
+================================================================================
+
+LAYOUT: Letakkan fitur ini di SIDEBAR atau sebagai SECTION BARU di bawah peta.
+
+┌───────────────────────────────────────────────────────────┐
+│ 🛡️ ANALISIS KESELAMATAN LOKASI                            │
+├───────────────────────────────────────────────────────────┤
+│                                                           │
+│  📍 Lokasi: [Dropdown: Semarang ▼]                        │
+│  🗓️ Bulan Aktif: Januari 2026 (Real-time)                 │
+│                                                           │
+│  ┌─────────────────────────────────────────────────────┐  │
+│  │ 📊 RINGKASAN HISTORIS                               │  │
+│  │ ───────────────────                                 │  │
+│  │ Di bulan Januari (berdasarkan data 2020-2025):      │  │
+│  │   • Total gempa tercatat: 47 kejadian               │  │
+│  │   • Rata-rata magnitude: 4.2                        │  │
+│  │   • Magnitude tertinggi: 5.8 (Jan 2023)             │  │
+│  │   • Persentase High/Very High: 35%                  │  │
+│  └─────────────────────────────────────────────────────┘  │
+│                                                           │
+│  ┌─────────────────────────────────────────────────────┐  │
+│  │ 🚨 STATUS RISIKO: WASPADA                           │  │ <-- Warna Orange
+│  │ ───────────────────────────                         │  │
+│  │ Berdasarkan track record, wilayah SEMARANG dan      │  │
+│  │ sekitarnya memiliki aktivitas seismik yang cukup    │  │
+│  │ aktif di bulan Januari. Harap tetap waspada.        │  │
+│  └─────────────────────────────────────────────────────┘  │
+│                                                           │
+│  ┌─────────────────────────────────────────────────────┐  │
+│  │ 💡 TIPS KESELAMATAN                                 │  │
+│  │ ──────────────────                                  │  │
+│  │ ✅ Identifikasi zona aman di rumah/kantor           │  │
+│  │ ✅ Simpan tas siaga berisi air, makanan, obat       │  │
+│  │ ✅ Kenali jalur evakuasi terdekat                   │  │
+│  │ ✅ Jauhi bangunan rapuh & kaca saat berguncang      │  │
+│  │ ✅ Jangan panik, lindungi kepala dengan tangan      │  │
+│  │ ✅ Aktifkan notifikasi BMKG di HP                   │  │
+│  └─────────────────────────────────────────────────────┘  │
+│                                                           │
+└───────────────────────────────────────────────────────────┘
+
+
+================================================================================
+4. KONTEN TIPS KESELAMATAN (STATIS)
+================================================================================
+
+Berikut adalah teks tips yang bisa di-copy langsung ke kode:
+
+TIPS_SEBELUM_GEMPA = [
+    "🏠 Identifikasi zona aman di rumah: di bawah meja kokoh, jauh dari jendela.",
+    "🎒 Siapkan tas siaga darurat berisi air minum, makanan kering, senter, obat pribadi.",
+    "📍 Kenali rute evakuasi dan titik kumpul di lingkungan Anda.",
+    "🔧 Pastikan lemari dan rak buku terikat ke dinding untuk mencegah roboh.",
+    "📱 Aktifkan notifikasi peringatan dini BMKG di smartphone."
+]
+
+TIPS_SAAT_GEMPA = [
+    "🛑 Jangan panik. Tetap tenang dan bertindak cepat.",
+    "🙇 Berlindung di bawah meja atau benda kokoh, lindungi kepala dan leher.",
+    "🚪 Jauhi jendela, cermin, lemari, dan benda berat yang bisa jatuh.",
+    "🏃 Jika di luar ruangan, jauhi gedung, tiang listrik, dan pohon besar.",
+    "🚗 Jika sedang berkendara, hentikan kendaraan di tempat terbuka."
+]
+
+TIPS_SETELAH_GEMPA = [
+    "🔍 Periksa diri sendiri dan orang sekitar. Berikan pertolongan pertama jika perlu.",
+    "⚠️ Waspada gempa susulan. Jangan masuk gedung yang retak.",
+    "📻 Dengarkan informasi resmi dari BMKG melalui radio atau aplikasi.",
+    "🔥 Periksa instalasi gas dan listrik. Matikan jika ada kebocoran.",
+    "📞 Hubungi keluarga untuk memberi kabar, hindari telepon berlebihan."
+]
+
+
+================================================================================
+5. KODE PSEUDOCODE (UNTUK DEVELOPER)
+================================================================================
+
+# --- Di bagian atas file (imports) ---
+from datetime import datetime
+
+# --- Di section baru atau sidebar ---
+st.sidebar.markdown("---")
+st.sidebar.subheader("🛡️ Analisis Keselamatan Lokasi")
+
+# 1. Input Lokasi
+WILAYAH_BOUNDS = {
+    "Sumatra":      {"lat": (-6, 6), "lon": (95, 106)},
+    "Jawa":         {"lat": (-9, -5), "lon": (105, 115)},
+    "Bali-NTB":     {"lat": (-10, -6), "lon": (115, 120)},
+    "Sulawesi":     {"lat": (-6, 2), "lon": (119, 126)},
+    "Maluku":       {"lat": (-8, 2), "lon": (124, 136)},
+    "Papua":        {"lat": (-9, 0), "lon": (130, 141)},
+}
+selected_region = st.sidebar.selectbox("Pilih Wilayah", list(WILAYAH_BOUNDS.keys()))
+
+# 2. Deteksi Bulan Real-time
+now = datetime.now()
+current_month = now.month
+current_month_name = now.strftime("%B")  # e.g., "January"
+st.sidebar.info(f"🗓️ Bulan Aktif: {current_month_name} {now.year}")
+
+# 3. Filter Data
+bounds = WILAYAH_BOUNDS[selected_region]
+df_region = df[
+    (df['latitude'].between(*bounds['lat'])) & 
+    (df['longitude'].between(*bounds['lon']))
+]
+df_region['month'] = pd.to_datetime(df_region['time']).dt.month
+df_month = df_region[df_region['month'] == current_month]
+
+# 4. Hitung Statistik
+total = len(df_month)
+if total > 0:
+    avg_mag = df_month['mag'].mean()
+    max_mag = df_month['mag'].max()
+    high_risk_count = len(df_month[df_month['cluster'] >= 2])
+    pct_high = high_risk_count / total
+else:
+    avg_mag, max_mag, pct_high = 0, 0, 0
+
+# 5. Tentukan Risk Level
+if total == 0:
+    risk_level, risk_color, risk_msg = "DATA TIDAK TERSEDIA", "gray", "Tidak ada data historis."
+elif pct_high > 0.5 or max_mag >= 5.5:
+    risk_level, risk_color = "BAHAYA TINGGI 🔴", "red"
+    risk_msg = f"Wilayah ini memiliki riwayat gempa berbahaya di bulan {current_month_name}."
+elif avg_mag >= 4.0 or pct_high > 0.25:
+    risk_level, risk_color = "WASPADA 🟠", "orange"
+    risk_msg = "Ada aktivitas seismik signifikan. Tetap waspada."
+else:
+    risk_level, risk_color = "RELATIF AMAN 🟢", "green"
+    risk_msg = "Aktivitas seismik relatif rendah berdasarkan histori."
+
+# 6. Tampilkan
+st.sidebar.markdown(f"""
+**📊 Ringkasan Historis ({current_month_name})**
+- Total Gempa: {total}
+- Avg Mag: {avg_mag:.2f}
+- Max Mag: {max_mag:.2f}
+- High/Very High: {pct_high*100:.0f}%
+""")
+
+st.sidebar.markdown(f"""
+<div style="background-color:{risk_color}; padding:10px; border-radius:5px; color:white; text-align:center;">
+<strong>{risk_level}</strong><br>{risk_msg}
+</div>
+""", unsafe_allow_html=True)
+
+# 7. Tampilkan Tips (Hanya jika risiko tinggi/waspada)
+if risk_color in ["red", "orange"]:
+    with st.sidebar.expander("💡 Tips Keselamatan", expanded=True):
+        st.markdown("**Sebelum Gempa:**")
+        for tip in TIPS_SEBELUM_GEMPA:
+            st.markdown(f"- {tip}")
+        st.markdown("**Saat Gempa:**")
+        for tip in TIPS_SAAT_GEMPA:
+            st.markdown(f"- {tip}")
+        st.markdown("**Setelah Gempa:**")
+        for tip in TIPS_SETELAH_GEMPA:
+            st.markdown(f"- {tip}")
+
+
+================================================================================
+6. CATATAN TAMBAHAN
+================================================================================
+
+A. DATA BOUNDING BOX
+   Koordinat wilayah di atas adalah PERKIRAAN kasar. Untuk akurasi lebih baik,
+   gunakan data shapefile kabupaten/kota atau API geocoding seperti Nominatim.
+
+B. ALTERNATIF: INPUT KOTA
+   Jika ingin input kota spesifik (misal: "Semarang"), bisa buat dictionary:
+   KOTA_COORDS = {
+       "Semarang":   {"lat": -6.97, "lon": 110.42, "radius": 0.5},
+       "Surabaya":   {"lat": -7.25, "lon": 112.75, "radius": 0.5},
+       ...
+   }
+   Lalu filter dengan jarak euclidean atau haversine.
+
+C. REFRESH OTOMATIS
+   Jika ingin update bulan otomatis setiap hari, tambahkan:
+   st.experimental_rerun() dengan scheduler atau cron.
+
+D. INTEGRASI API BMKG (OPSIONAL)
+   Untuk data real-time, bisa integrasikan dengan API BMKG:
+   https://data.bmkg.go.id/DataMKG/TEWS/autogempa.json
