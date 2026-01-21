@@ -1,0 +1,84 @@
+========================================================================
+DOKUMENTASI TEKNIS & PENJELASAN SOURCE CODE
+PROJECT: EARTHQUAKE CLUSTERING VIEWER (KELOMPOK 2)
+========================================================================
+
+1. STRUKTUR FILE & KEGUNAANNYA
+------------------------------------------------------------------------
+Berikut adalah penjelasan mengenai fungsi file-file utama dalam folder ini:
+
+a. streamlit_app.py
+   - [cite_start]File utama (main program) yang menjalankan antarmuka web dan logika aplikasi[cite: 21].
+   - Mengatur tampilan (UI), interaksi peta, filter data, dan fitur prediksi.
+
+b. kmeans_pipeline.joblib
+   - [cite_start]Model Machine Learning (K-Means) yang sudah dilatih sebelumnya[cite: 22].
+   - File ini berisi scaler dan model clustering agar aplikasi tidak perlu melakukan training ulang setiap kali dijalankan.
+
+c. cluster_info.csv
+   - [cite_start]Metadata yang berisi informasi detail tiap klaster[cite: 22].
+   - [cite_start]Menyimpan label risiko (Low, Moderate, High, Very High) dan skor keparahan (severity score) untuk interpretasi hasil[cite: 17].
+
+d. earthquakes_with_cluster.csv
+   - [cite_start]Dataset utama berisi histori gempa bumi yang sudah memiliki kolom 'cluster' dan 'label' hasil pengolahan[cite: 23].
+
+e. requirements.txt
+   - [cite_start]Daftar pustaka (library) Python yang wajib diinstall, seperti streamlit, pandas, joblib, folium, dan scikit-learn[cite: 21].
+
+------------------------------------------------------------------------
+2. BEDAH LOGIKA PROGRAM (streamlit_app.py)
+------------------------------------------------------------------------
+
+A. KONFIGURASI HALAMAN & CSS
+   - [cite_start]Program menggunakan `st.set_page_config(layout="wide")` agar tampilan peta memenuhi layar[cite: 26].
+   - [cite_start]Custom CSS ditambahkan untuk mempercantik "Safety Box" (kotak panduan) dan kartu informasi risiko [cite: 28-30].
+
+B. LOAD DATA & MODEL (Caching)
+   - Fungsi `load_data()` dan `load_model()` menggunakan dekorator `@st.cache_data` dan `@st.cache_resource`.
+   - [cite_start]Tujuannya agar data besar tidak perlu dimuat ulang setiap kali user mengklik tombol, menjaga aplikasi tetap cepat[cite: 37].
+
+C. FITUR PENCARIAN & GEOCODING
+   - [cite_start]Menggunakan library `geopy.geocoders` (Nominatim) untuk mengubah nama kota (input user) menjadi koordinat Latitude/Longitude[cite: 39].
+   - Jika lokasi ditemukan, aplikasi menyimpan koordinat pusat dan alamatnya ke dalam variabel `search_context`.
+
+D. LOGIKA FILTER RADIUS (SPATIAL FILTERING)
+   - Aplikasi tidak hanya memfilter berdasarkan tanggal, tapi juga jarak.
+   - [cite_start]Menggunakan rumus `geodesic` untuk menghitung jarak antara titik pusat pencarian dengan ribuan titik gempa di dataset[cite: 41].
+   - [cite_start]Kode: `bbox['distance'] <= search_radius` memastikan hanya gempa dalam radius (misal 200km) yang ditampilkan[cite: 42].
+
+E. VISUALISASI PETA (FOLIUM)
+   - Peta interaktif dibuat menggunakan `folium.Map`.
+   - [cite_start]Menggunakan `MarkerCluster` agar jika ada ribuan gempa, titik-titiknya menyatu saat di-zoom out, menjaga kerapian peta[cite: 11].
+   - [cite_start]Warna marker disesuaikan dengan risiko: Hijau (Low) hingga Merah (Very High)[cite: 49].
+
+------------------------------------------------------------------------
+3. PENJELASAN ALGORITMA KHUSUS
+------------------------------------------------------------------------
+
+A. ANALISIS KESELAMATAN MUSIMAN (SEASONAL ANALYSIS)
+   [cite_start]Fitur ini menganalisis risiko berdasarkan bulan saat ini dibandingkan sejarah masa lalu[cite: 51].
+   
+   [cite_start]Logika Penentuan Status [cite: 52-55]:
+   1. Data Tidak Cukup: Jika tidak ada data historis di bulan tersebut.
+   2. RISIKO TINGGI (RED): 
+      - Jika >50% kejadian gempa di bulan tersebut berstatus High/Very High.
+      - ATAU jika pernah terjadi gempa dengan Magnitudo ≥ 6.0 di bulan tersebut.
+   3. WASPADA (ORANGE):
+      - Jika 25-50% kejadian gempa berstatus High Risk.
+   4. RELATIF AMAN (GREEN):
+      - Jika mayoritas gempa adalah Low/Moderate Risk.
+
+B. PREDIKSI GEMPA BARU (AI PREDICTION)
+   Fitur di sidebar untuk memprediksi risiko gempa secara manual.
+   
+   [cite_start]Alur Proses [cite: 70-71]:
+   1. User menginput Magnitudo dan Kedalaman (Depth).
+   2. Data diubah menjadi array numpy `[[mag, depth]]`.
+   3. `pipeline.predict(arr)` memproses data melalui Scaler lalu ke K-Means.
+   4. Hasilnya berupa nomor klaster (0-3) yang kemudian diterjemahkan menjadi label risiko (misal: "Moderate") menggunakan dictionary `id_to_label`.
+
+------------------------------------------------------------------------
+4. CATATAN PENGEMBANGAN
+------------------------------------------------------------------------
+- Pastikan koneksi internet aktif saat menjalankan aplikasi karena fitur Peta (Folium) dan Pencarian (Nominatim) memerlukan akses online.
+- File `cluster_remap.pkl` dan `scaler.joblib` adalah komponen pendukung model ML untuk memastikan data input user memiliki skala yang sama dengan data training.
