@@ -3,351 +3,441 @@ import pandas as pd
 import numpy as np
 import joblib
 import folium
-import textwrap  # <--- Library penolong untuk fix HTML
+import textwrap
+from datetime import datetime
 from folium.plugins import MarkerCluster, BeautifyIcon
 from streamlit_folium import st_folium
+from geopy.geocoders import Nominatim
+from geopy.distance import geodesic
+from sklearn.pipeline import Pipeline
 
 # --- 1. Page Config ---
-st.set_page_config(layout="wide", page_title="Earthquake Clustering")
+st.set_page_config(layout="wide", page_title="Earthquake Risk Viewer")
 
 # --- CSS: Wide Mode tapi Rapi ---
 st.markdown("""
     <style>
         .block-container {
-            padding-top: 2rem;
+            padding-top: 1rem;
             padding-bottom: 2rem;
             padding-left: 1rem;
             padding-right: 1rem;
             max-width: 100%;
         }
         h1 { margin-bottom: 0rem; }
+        .risk-card {
+            border-radius: 8px;
+            padding: 15px;
+            color: white;
+            margin-bottom: 10px;
+            height: 100%;
+        }
+        .safety-box {
+            background-color: #f0f2f6; 
+            padding: 20px; 
+            border-radius: 10px; 
+            margin-top: 20px;
+            border-left: 5px solid #ff4b4b;
+            color: #31333F;
+        }
+        .safety-header {
+            font-size: 1.5rem; 
+            font-weight: bold; 
+            margin-bottom: 10px;
+            color: #0e1117;
+        }
     </style>
 """, unsafe_allow_html=True)
+
+# --- CONSTANTS: SAFETY TIPS ---
+TIPS_SEBELUM_GEMPA = [
+    "🏠 Identifikasi zona aman di rumah: di bawah meja kokoh, jauh dari jendela.",
+    "🎒 Siapkan tas siaga darurat berisi air minum, makanan kering, senter, obat pribadi.",
+    "📍 Kenali rute evakuasi dan titik kumpul di lingkungan Anda.",
+    "🔧 Pastikan lemari dan rak buku terikat ke dinding untuk mencegah roboh.",
+    "📱 Aktifkan notifikasi peringatan dini BMKG di smartphone."
+]
+
+TIPS_SAAT_GEMPA = [
+    "🛑 Jangan panik. Tetap tenang dan bertindak cepat.",
+    "🙇 Berlindung di bawah meja atau benda kokoh, lindungi kepala dan leher.",
+    "🚪 Jauhi jendela, cermin, lemari, dan benda berat yang bisa jatuh.",
+    "🏃 Jika di luar ruangan, jauhi gedung, tiang listrik, dan pohon besar.",
+    "🚗 Jika sedang berkendara, hentikan kendaraan di tempat terbuka."
+]
+
+TIPS_SETELAH_GEMPA = [
+    "🔍 Periksa diri sendiri dan orang sekitar. Berikan pertolongan pertama jika perlu.",
+    "⚠️ Waspada gempa susulan. Jangan masuk gedung yang retak.",
+    "📻 Dengarkan informasi resmi dari BMKG melalui radio atau aplikasi.",
+    "🔥 Periksa instalasi gas dan listrik. Matikan jika ada kebocoran.",
+    "📞 Hubungi keluarga untuk memberi kabar, hindari telepon berlebihan."
+]
+
+RISK_ORDER = ['Low', 'Moderate', 'High', 'Very High']
+RISK_COLORS = {
+    'Low': '#28a745',       # Green
+    'Moderate': '#ffc107',  # Yellow
+    'High': '#fd7e14',      # Orange
+    'Very High': '#dc3545'  # Red
+}
+
+RISK_DETAILS = {
+    'Low': {'impact': 'Guncangan lemah, dirasakan sedikit orang.', 'advice': 'Tetap tenang, rutinitas normal.', 'bg': 'rgba(40, 167, 69, 0.2)'},
+    'Moderate': {'impact': 'Barang bergoyang, potensi kerusakan ringan.', 'advice': 'Waspada benda jatuh, lindungi kepala.', 'bg': 'rgba(255, 193, 7, 0.2)'},
+    'High': {'impact': 'Kerusakan struktur bangunan kurang kokoh.', 'advice': 'Jauhi kaca/jendela, berlindung di bawah meja.', 'bg': 'rgba(253, 126, 20, 0.2)'},
+    'Very High': {'impact': 'Kerusakan masif, potensi rubuh total.', 'advice': 'SEGERA EVAKUASI ke area terbuka. Hindari gedung.', 'bg': 'rgba(220, 53, 69, 0.2)'}
+}
+
+def get_color(label): return RISK_COLORS.get(label, 'gray')
 
 # --- 2. Load Data & Models ---
 @st.cache_data
 def load_data():
-    df = pd.read_csv("earthquakes_with_cluster.csv")
+    df = pd.read_csv("earthquakes_with_cluster.csv", low_memory=False)
     df['time'] = pd.to_datetime(df['time'], errors='coerce')
     return df
 
 @st.cache_resource
 def load_model():
-    pipeline = joblib.load("kmeans_pipeline.joblib")
+    try:
+        pipeline = joblib.load("kmeans_pipeline.joblib")
+    except FileNotFoundError:
+        scaler = joblib.load("scaler.joblib")
+        kmeans = joblib.load("kmeans_model.joblib")
+        pipeline = Pipeline([('scaler', scaler), ('kmeans', kmeans)])
+        
     cluster_info = pd.read_csv("cluster_info.csv")
-    # Remove any empty rows to prevent KeyError
     cluster_info = cluster_info.dropna(subset=['cluster', 'label'])
     return pipeline, cluster_info
 
 try:
     df = load_data()
     pipeline, cluster_info = load_model()
+    # Init mappings
+    cluster_info['label'] = pd.Categorical(cluster_info['label'], categories=RISK_ORDER, ordered=True)
+    cluster_info_sorted = cluster_info.sort_values('label')
+    id_to_label = dict(zip(cluster_info['cluster'], cluster_info['label']))
+    df['label'] = df['cluster'].map(id_to_label)
+    mag_col = 'mag' if 'mag' in df.columns else 'magnitude'
 except Exception as e:
-    st.error(f"Error loading data/model: {e}")
+    st.error(f"Error loading system: {e}")
     st.stop()
 
-# --- 3. Sidebar Filters ---
-st.sidebar.title("🔍 Filter Data")
-# --- Callback Reset Filter ---
-def reset_filters():
-    st.session_state['date_start'] = df['time'].min().date()
-    st.session_state['date_end'] = df['time'].max().date()
-    st.session_state['mag_range'] = (float(df[mag_col].min()), float(df[mag_col].max()))
-    st.session_state['depth_range'] = (depth_min_val, depth_max_val)
 
+# --- 3. LAYOUT BEGINS ---
+
+# --- A. Header (MAIN PAGE) ---
+st.title("🌋 Earthquake Risk Viewer")
+
+# --- Logic: Get Search from Session State (Defined at bottom) ---
+search_query = st.session_state.get('search_query_input', '')
+
+# Search Logic Processing
+search_context = None
+
+# --- Logic: Get Inputs from Session State (Defined at bottom) ---
+search_query = st.session_state.get('search_query_input', '')
+search_radius = st.session_state.get('radius_input', 200)
+
+
+if search_query:
+    geolocator = Nominatim(user_agent="geo_earthquake_app")
+    try:
+        location = geolocator.geocode(search_query)
+        if location:
+            search_lat, search_lon = location.latitude, location.longitude
+            search_context = {'lat': search_lat, 'lon': search_lon, 'address': location.address}
+        else:
+            if 'search_query_input' in st.session_state: # Only warn if input exists
+                 st.warning("Lokasi tidak ditemukan.")
+    except:
+        st.warning("Gagal koneksi geocoding.")
+
+# Filter Data Global (Sidebar Filters + Search)
+# --- Sidebar Filters ---
+st.sidebar.title("🛠️ Tools & Filter")
 if st.sidebar.button("🔄 Reset Filter"):
-    reset_filters()
+    st.session_state.clear()
+    st.rerun()
 
-min_date = st.sidebar.date_input("Tanggal awal", df['time'].min().date(), key='date_start')
-max_date = st.sidebar.date_input("Tanggal akhir", df['time'].max().date(), key='date_end')
 
-mag_col = 'mag' if 'mag' in df.columns else 'magnitude'
-mag_min, mag_max = st.sidebar.slider("Rentang Magnitudo", 
-                                     float(df[mag_col].min()), float(df[mag_col].max()), 
-                                     (float(df[mag_col].min()), float(df[mag_col].max())),
-                                     key='mag_range')
 
-depth_min_val = float(df['depth'].min()) if not df['depth'].isna().all() else 0.0
-depth_max_val = float(df['depth'].max()) if not df['depth'].isna().all() else 700.0
-depth_min, depth_max = st.sidebar.slider("Rentang Kedalaman (km)", depth_min_val, depth_max_val, 
-                                        (depth_min_val, depth_max_val),
-                                        key='depth_range')
 
-# Filter Logic
+min_date = st.sidebar.date_input("Tanggal Awal", df['time'].min().date())
+max_date = st.sidebar.date_input("Tanggal Akhir", df['time'].max().date())
+selected_risks = st.sidebar.multiselect("Filter Risiko", RISK_ORDER, default=RISK_ORDER)
+
+# Base Filter
 filtered = df[
     (df['time'].dt.date >= min_date) &
     (df['time'].dt.date <= max_date) &
-    (df[mag_col] >= mag_min) & (df[mag_col] <= mag_max)
+    (df['label'].isin(selected_risks))
 ]
-if not df['depth'].isna().all():
-    filtered = filtered[(filtered['depth'] >= depth_min) & (filtered['depth'] <= depth_max)]
 
-# --- 4. Main Layout (Top Section) ---
-st.title("🌋 Earthquake Clustering Viewer")
-st.markdown("Visualisasi persebaran gempa bumi dan tingkat keparahannya menggunakan K-Means Clustering.")
+# Apply Search Filter
+map_center = [filtered['latitude'].mean(), filtered['longitude'].mean()] if not filtered.empty else [0, 0]
+map_zoom = 5
 
-# Metrics
-m1, m2, m3 = st.columns(3)
-with m1:
-    st.metric("Total Kejadian (Filtered)", f"{len(filtered):,}")
-with m2:
-    avg_mag = filtered[mag_col].mean() if not filtered.empty else 0
-    st.metric("Rata-rata Magnitudo", f"{avg_mag:.2f}")
-with m3:
-    max_mag = filtered[mag_col].max() if not filtered.empty else 0
-    st.metric("Magnitudo Tertinggi", f"{max_mag:.2f}")
+if search_context:
+    map_center = [search_context['lat'], search_context['lon']]
+    map_zoom = 8
+    
+    # Distance Filter
+    def calc_dist(row):
+        return geodesic((search_context['lat'], search_context['lon']), (row['latitude'], row['longitude'])).km
+    
+    deg_radius = search_radius / 111.0
+    bbox = filtered[
+        (filtered['latitude'].between(search_context['lat'] - deg_radius, search_context['lat'] + deg_radius)) &
+        (filtered['longitude'].between(search_context['lon'] - deg_radius, search_context['lon'] + deg_radius))
+    ].copy()
+    
+    if not bbox.empty:
+        bbox['distance'] = bbox.apply(calc_dist, axis=1)
+        filtered = bbox[bbox['distance'] <= search_radius]
+        
+    # Enrich Context
+    if not filtered.empty:
+        dom_label = filtered['label'].mode()[0]
+        search_context['dominant_risk'] = dom_label
+        search_context['count'] = len(filtered)
+        search_context['advice'] = RISK_DETAILS[dom_label]['advice']
+        
 
+# --- B. Metrics ---
 st.divider()
+m1, m2, m3 = st.columns(3)
+with m1: st.metric("Total Kejadian", f"{len(filtered):,}")
+with m2: st.metric("Rata-rata Magnitudo", f"{filtered[mag_col].mean():.2f}" if not filtered.empty else "0")
+with m3: st.metric("Magnitudo Tertinggi", f"{filtered[mag_col].max():.2f}" if not filtered.empty else "0")
 
-# --- 5. Map Visualization ---
-if not filtered.empty:
-    center_lat = filtered['latitude'].mean()
-    center_lon = filtered['longitude'].mean()
-else:
-    center_lat, center_lon = 0, 0
+# --- C. Risk Legend (Top) ---
+st.subheader("📋 Informasi Kategori & Rekomendasi")
+info_cols = st.columns(4)
+for i, (_, row) in enumerate(cluster_info_sorted.iterrows()):
+    lbl = row['label']
+    clr = get_color(lbl)
+    det = RISK_DETAILS.get(lbl, {})
+    with info_cols[i]:
+        st.markdown(f"""
+        <div style="background-color: #262730; border-top: 4px solid {clr}; padding: 15px; border-radius: 8px; height: 100%;">
+            <h3 style="margin:0 0 5px 0; color: {clr};">{lbl}</h3>
+            <p style="font-size: 0.8rem; margin-bottom:5px;"><b>Efek:</b> {det.get('impact')}</p>
+            <p style="font-size: 0.8rem; color:#FFD700;"><b>Saran:</b> {det.get('advice')}</p>
+        </div>
+        """, unsafe_allow_html=True)
 
-m = folium.Map(location=[center_lat, center_lon], zoom_start=5, prefer_canvas=True)
+# --- D. Search Analysis Result Display (Main Area) ---
+if search_context and 'dominant_risk' in search_context:
+    r_lbl = search_context['dominant_risk']
+    r_clr = get_color(r_lbl)
+    st.markdown(f"""
+    <div style="margin: 20px 0; padding: 20px; border: 2px solid {r_clr}; border-radius: 10px; background-color: rgba(255,255,255,0.05);">
+        <h3 style="margin:0;">📍 Analisis Wilayah: {search_context['address']}</h3>
+        <p>Ditemukan <b>{search_context['count']}</b> gempa dalam radius {search_radius}km.</p>
+        <h2 style="color: {r_clr};">Status: {r_lbl}</h2>
+        <p><b>Rekomendasi Utama:</b> {search_context['advice']}</p>
+    </div>
+    """, unsafe_allow_html=True)
+elif search_context:
+    st.info(f"📍 {search_context['address']}: Tidak ada catatan gempa signifikan dalam radius {search_radius}km di dataset ini.")
+
+# --- E. Map ---
+m = folium.Map(location=map_center, zoom_start=map_zoom, prefer_canvas=True)
 marker_cluster = MarkerCluster().add_to(m)
 
-# --- 3.1 Advanced Filters (Data Sampling) ---
-st.sidebar.markdown("---")
-st.sidebar.subheader("🎚️ Atur Jumlah Data")
+# Sample Data for Map Performance
+plot_df = filtered.sample(min(len(filtered), 2000), random_state=42) if len(filtered) > 2000 else filtered
 
-total_filtered = len(filtered)
-# Default 2000 or total if less than 2000
-default_max = 2000
-max_val_slider = total_filtered if total_filtered > 2000 else 2000
-min_val_slider = 2000
-
-max_samples = st.sidebar.slider(
-    "Jumlah Data Ditampilkan (Max)",
-    min_value=min_val_slider,
-    max_value=max_val_slider if max_val_slider > min_val_slider else min_val_slider + 1000, # Fallback to avoid error if total < 2000
-    value=default_max if default_max <= max_val_slider else max_val_slider,
-    step=100,
-    help="Atur berapa banyak data yang ingin ditampilkan di peta. Batas minimal 2.000."
-)
-
-# Balanced Sampling Logic (Water Filling Algorithm)
-if total_filtered > max_samples:
-    st.info(f"ℹ️ Mengambil {max_samples} sampel data secara merata (Water Filling) dari {total_filtered} data.")
-    
-    def balanced_sample_water_filling(df, n_samples, cluster_col='cluster'):
-        """
-        Mengambil sampel dengan metode Water Filling:
-        1. Target awal dibagi rata.
-        2. Jika ada cluster yang kurang dari target, ambil semua.
-        3. Sisa kuota didistribusikan ulang ke cluster yang masih punya sisa data.
-        """
-        unique_c = df[cluster_col].unique()
-        n_c = len(unique_c)
-        
-        # Simpan data per cluster
-        clusters = {c: df[df[cluster_col] == c] for c in unique_c}
-        
-        # Sisa kuota yang harus dipenuhi
-        quota_left = n_samples
-        
-        # Cluster yang masih 'aktif' (bisa diambil datanya)
-        active_clusters = list(unique_c)
-        
-        sampled_indices = []
-        
-        while quota_left > 0 and active_clusters:
-            # Target per cluster aktif saat ini
-            target_per_cluster = quota_left // len(active_clusters)
-            # Jika hasil bagi 0 (karena quota < n_active), set min 1 agar jalan terus sampai habis
-            if target_per_cluster == 0: 
-                target_per_cluster = 1
-            
-            # List untuk mencatat cluster yang "habis" di putaran ini
-            clusters_exhausted = []
-            
-            # Hitung alokasi putaran ini agar tidak 'over' quota total
-            # (Mencegah masalah pembulatan)
-            allocated_this_round = 0
-            
-            for c in active_clusters:
-                if quota_left <= 0: break
-                
-                # Data yang BELUM diambil di cluster ini
-                # (Kita butuh cara efisien, misal tracking index. 
-                #  Tapi karena dataframe di-slice di awal (clusters dict), 
-                #  kita bisa tracking berapa yang SUDAH diambil dari setiap DF?)
-                # Simplifikasi: Kita ambil sample baru dari sisa, lalu update df di dictionary
-                
-                current_df = clusters[c]
-                n_available = len(current_df)
-                
-                # Target ambil sesi ini
-                n_take = min(n_available, target_per_cluster)
-                
-                # Pastikan tidak mengambil lebih dari sisa quota total
-                n_take = min(n_take, quota_left)
-                
-                if n_take > 0:
-                    taken = current_df.sample(n=n_take, random_state=42)
-                    sampled_indices.extend(taken.index.tolist())
-                    
-                    # Kurangi quota global
-                    quota_left -= n_take
-                    
-                    # Update sisa data di cluster ini (buang yang sudah diambil)
-                    clusters[c] = current_df.drop(taken.index)
-                    
-                    # Cek apakah cluster ini sudah habis?
-                    if len(clusters[c]) == 0:
-                        clusters_exhausted.append(c)
-                else:
-                    # Jika 0 (misal cluster kosong), mark exhausted
-                    clusters_exhausted.append(c)
-            
-            # Hapus cluster yang sudah habis dari active list
-            for c in clusters_exhausted:
-                if c in active_clusters:
-                    active_clusters.remove(c)
-                    
-        # Kembalikan dataframe berdasarkan index yang terpilih
-        return df.loc[sampled_indices]
-
-    data_to_plot = balanced_sample_water_filling(filtered, max_samples)
-
-else:
-    # Jika data kurang dari batas max, tampilkan semua
-    data_to_plot = filtered
-
-if False: # Old logic disabled
-    st.warning(f"⚠️ Menampilkan {MAX_POINTS} data teratas dari {len(filtered)} total data demi performa peta.")
-
-colors = ['red', 'blue', 'green', 'purple', 'orange', 'darkred', 'cadetblue', 'black']
-colors_hex = {0: 'red', 1: 'blue', 2: 'green', 3: 'purple', 4: 'orange'}
-
-# --- Loop 1: Tambahkan Markers ---
-for _, row in data_to_plot.iterrows():
-    c_id = int(row['cluster'])
-    color = colors[c_id % len(colors)]
-    
-    popup_txt = f"""
-    <b>Mag:</b> {row[mag_col]}<br>
-    <b>Depth:</b> {row['depth']} km<br>
-    <b>Cluster:</b> {c_id}
-    """
-    
+for _, row in plot_df.iterrows():
+    lbl = row['label']
+    clr = get_color(lbl)
     folium.Marker(
-        location=[row['latitude'], row['longitude']],
-        popup=folium.Popup(popup_txt, max_width=200),
-        icon=BeautifyIcon(
-            icon_shape='marker',
-            number=str(c_id),
-            border_color=color,
-            background_color=color,
-            text_color='white',
-            inner_icon_style='margin-top:0; font-size:12px; font-weight:bold;' 
-        )
+        [row['latitude'], row['longitude']],
+        icon=BeautifyIcon(icon_shape='marker', number=lbl[0], border_color=clr, background_color=clr, text_color='white'),
+        popup=f"Risk: {lbl}<br>Mag: {row[mag_col]}"
     ).add_to(marker_cluster)
 
-# --- Tambahkan Legend (Sekali saja) ---
-legend_html = """
-<div style="
-    position: fixed; 
-    bottom: 50px; left: 50px; 
-    z-index:9999; font-size:14px;
-        background-color: rgba(255, 255, 255, 0.9);
-        color: black !important;
-        border: 2px solid #ccc; border-radius: 6px; padding: 10px;
-        box-shadow: 2px 2px 5px rgba(0,0,0,0.3);
-    ">
-    <h5 style="margin:0 0 5px 0; border-bottom:1px solid #ccc; padding-bottom:3px;">Legenda Cluster</h5>
-"""
+if search_context:
+    folium.Marker([search_context['lat'], search_context['lon']], icon=folium.Icon(color='red', icon='star')).add_to(m)
+    folium.Circle([search_context['lat'], search_context['lon']], radius=search_radius*1000, color='red', fill=True, fill_opacity=0.1, popup=f"Radius: {search_radius}km").add_to(m)
 
-# Isi Legend dari cluster_info
-cluster_info_sorted = cluster_info.sort_values(by='cluster', ascending=True)
-for _, row in cluster_info_sorted.iterrows():
-    c_id = int(row['cluster'])
-    severity = row['severity_score']
-    # FIX: Gunakan label dari CSV
-    risk = row['label']
-    c_color = colors_hex.get(c_id, 'gray')
+st_folium(m, height=500, use_container_width=True, returned_objects=[])
+
+# --- F. Search Input (Moved Below Map) ---
+st.markdown("### 🔍 Cari Lokasi")
+c_search, c_date = st.columns([3, 1])
+
+with c_search:
+    # Use key to bind to session state, used at top of script
+    st.text_input("Nama Kota/Daerah", placeholder="Ketik nama kota, misal: Cianjur, Ambon...", key="search_query_input")
+    # Radius Slider below search bar
+    st.slider("Radius Pencarian (km)", min_value=10, max_value=500, value=200, step=10, key="radius_input", help="Geser untuk memperluas atau mempersempit area pencarian.")
+
+with c_date:
+    now = datetime.now()
+    current_month_name = now.strftime("%B")
+    season = "Musim Hujan" if now.month in [10, 11, 12, 1, 2, 3] else "Musim Kemarau"
+    st.info(f"🗓️ **{current_month_name} {now.year}**\n\n{season}")
+
+
+# --- F. SAFETY ANALYSIS SECTION (Bottom) ---
+st.markdown("---")
+st.subheader("🛡️ Analisis Keselamatan: Perspektif Musiman")
+
+if search_context:
+    # 1. Historical Analysis for Current Month
+    df_hist_loc = bbox if 'bbox' in locals() and not bbox.empty else filtered # Use bbox if available
     
-    legend_html += f"""
-    <div style="margin-bottom: 3px; color: black;">
-        <i style="background: {c_color}; width: 12px; height: 12px; display: inline-block; border-radius: 50%; margin-right: 5px;"></i>
-        Cluster {c_id}: <b>{risk}</b>
-    </div>
-    """
-legend_html += "</div>"
-m.get_root().html.add_child(folium.Element(legend_html))
-
-# Membuat grid kolom dinamis untuk section bawah (persiapan)
-cols = st.columns(len(cluster_info_sorted))
-
-# Height 750px sesuai request
-st_folium(m, height=750, use_container_width=True, returned_objects=[])
-
-# --- 6. Cluster Info (Bottom Section) ---
-st.subheader("📊 Analisis Klaster (Cluster Meaning)")
-
-# Menggunakan expander yang terbuka default, dengan layout kolom di dalamnya
-with st.expander("Klik untuk melihat detail karakteristik tiap klaster", expanded=True):
-    cluster_info_sorted = cluster_info.sort_values(by='cluster', ascending=True)
-    colors_hex = {0: 'red', 1: 'blue', 2: 'green', 3: 'purple', 4: 'orange'}
-    
-    # Membuat grid kolom dinamis (misal 3 kolom per baris)
-    cols = st.columns(len(cluster_info_sorted)) 
-    
-    for i, (_, row) in enumerate(cluster_info_sorted.iterrows()):
-        # Pilih kolom target, jika klaster banyak, dia akan mengecil otomatis
-        target_col = cols[i] if i < len(cols) else cols[0]
+    if not df_hist_loc.empty:
+        df_hist_loc['month'] = df_hist_loc['time'].dt.month
+        df_month = df_hist_loc[df_hist_loc['month'] == now.month]
         
-        with target_col:
-            c_id = int(row['cluster'])
-            severity = row['severity_score']
-            # FIX: Gunakan label dari CSV, jangan hitung ulang manual
-            risk_level = row['label'] 
-            color = colors_hex.get(c_id, 'gray')
-            
+        hist_total = len(df_month)
+        hist_high = len(df_month[df_month['label'].isin(['High', 'Very High'])])
+        hist_pct = (hist_high / hist_total * 100) if hist_total > 0 else 0
+        
+        # Risk Logic with Explained Triggers
+        if hist_total == 0:
+            s_risk, s_color = "DATA TIDAK CUKUP", "gray"
+            s_msg = "Belum ada data historis signifikan di bulan ini."
+        elif hist_pct > 50:
+            s_risk, s_color = f"RISIKO TINGGI ({current_month_name})", "red"
+            s_msg = f"Bulan {current_month_name} memiliki riwayat gempa besar/berbahaya di wilayah ini.\n\n**(Pemicu: >50% gempa tercatat berstatus High/Very High)**"
+        elif df_month[mag_col].max() >= 6.0:
+            s_risk, s_color = f"RISIKO TINGGI ({current_month_name})", "red"
+            s_msg = f"Waspada gempa megathrust atau gempa kuat di musim ini.\n\n**(Pemicu: Pernah terjadi gempa Mag ≥ 6.0 di bulan ini)**"
+        elif hist_pct > 25:
+            s_risk, s_color = f"WASPADA ({current_month_name})", "orange"
+            s_msg = f"Aktivitas seismik cukup aktif di bulan {current_month_name}. Tetap waspada.\n\n**(Pemicu: 25-50% gempa berstatus High Risk)**"
+        else:
+            s_risk, s_color = f"RELATIF AMAN ({current_month_name})", "green"
+            s_msg = f"Secara historis, bulan {current_month_name} cenderung minim gempa besar.\n\n**(Pemicu: Mayoritas gempa Low/Moderate Risk)**"
+
+        # Calculate percentages for all clusters
+        cluster_stats = {}
+        for r in RISK_ORDER:
+            c_count = len(df_month[df_month['label'] == r])
+            c_pct = (c_count / hist_total * 100) if hist_total > 0 else 0
+            cluster_stats[r] = c_pct
+
+        # Display Layout: 50-50 Split for Status & Stats within Equal Containers
+        c1, c2 = st.columns(2)
+        
+        # Determine Dominant Cluster for Display
+        dom_cluster = df_month['label'].mode()[0] if not df_month.empty else '-'
+        
+        # FIXED HEIGHT CONFIG
+        CARD_HEIGHT = 350
+
+        with c1:
             st.markdown(f"""
-            <div style="
-                background-color: #262730;
-                border-top: 5px solid {color};
-                padding: 10px;
-                border-radius: 5px;
-                text-align: center;
-                height: 100%;">
-                <h4 style="margin:0; color: #FAFAFA;">Cluster {c_id}</h4>
-                <p style="font-size: 14px; margin-bottom: 5px; color: #E0E0E0;">Risk: <strong>{risk_level}</strong></p>
-                <hr style="margin: 5px 0; border-color: #4A4A4A;">
-                <p style="font-size: 12px; margin:0; color: #BDBDBD;">
-                Avg Mag: <strong>{row['mag']:.2f}</strong><br>
-                Avg Depth: <strong>{row['depth']:.0f} km</strong>
-                </p>
+            <div style="background-color:{s_color}; padding:20px; border-radius:10px; color:white; text-align:center; height: {CARD_HEIGHT}px; display: flex; flex-direction: column; justify-content: center;">
+                <h4 style="margin:0;">Status Musiman</h4>
+                <h2 style="margin:10px 0;">{s_risk}</h2>
+                <p style="margin:0;">{s_msg}</p>
             </div>
             """, unsafe_allow_html=True)
+            
+        with c2:
+            with st.container(height=CARD_HEIGHT, border=True):
+                # Header: Centered, No Icon
+                st.markdown(f"<h4 style='text-align: center; margin-top: 0;'>Statistik {current_month_name} (Histori)</h4>", unsafe_allow_html=True)
+                
+                # Section 1: Key Metrics (Data is already from df_month)
+                m1, m2, m3 = st.columns(3)
+                with m1: st.metric("Total Kejadian", hist_total)
+                with m2: st.metric("Max Magnitude", f"{df_month[mag_col].max():.1f}" if not df_month.empty else "0")
+                with m3: st.metric("Dominant Risk", dom_cluster)
+                
+                st.divider()
+                
+                # Section 2: Risk Percentage Breakdown
+                st.caption("Persentase Risiko per Resiko")
+                b1, b2, b3, b4 = st.columns(4)
+                with b1: 
+                    st.markdown(f":green[**Low**]")
+                    st.markdown(f"**{cluster_stats['Low']:.0f}%**")
+                with b2: 
+                    st.markdown(f":orange[**Mod**]")
+                    st.markdown(f"**{cluster_stats['Moderate']:.0f}%**")
+                with b3: 
+                    st.markdown(f":orange[**High**]")
+                    st.markdown(f"**{cluster_stats['High']:.0f}%**")
+                with b4: 
+                    st.markdown(f":red[**Very**]")
+                    st.markdown(f"**{cluster_stats['Very High']:.0f}%**")
+            
+        # Full Width Guide Below
+        st.markdown("### 💡 Panduan Keselamatan Lengkap")
+        with st.expander("Buka Panduan Langkah demi Langkah", expanded=True):
+            tab1, tab2, tab3 = st.tabs(["🛡️ Persiapan (Sebelum)", "🚨 Tindakan (Saat Gempa)", "⛑️ Pemulihan (Sesudah)"])
+            with tab1:
+                for t in TIPS_SEBELUM_GEMPA: st.info(t)
+            with tab2:
+                for t in TIPS_SAAT_GEMPA: st.warning(t)
+            with tab3:
+                for t in TIPS_SETELAH_GEMPA: st.success(t)
+    else:
+        st.info("Pilih lokasi di peta atau cari kota untuk melihat analisis keselamatan spesifik.")
+else:
+    st.info("ℹ️ **Cari lokasi** di bagian atas untuk melihat Analisis Keselamatan Musiman & Panduan Evakuasi.")
 
-# --- 7. Sidebar Prediction & Upload ---
-st.sidebar.markdown("---")
-st.sidebar.header("⚡ Prediksi Cepat")
 
-p_lat = st.sidebar.number_input("Lat", value=0.0, format="%.4f")
-p_lon = st.sidebar.number_input("Lon", value=0.0, format="%.4f")
-p_mag = st.sidebar.number_input("Mag", value=5.0)
-p_dep = st.sidebar.number_input("Depth (km)", value=10.0)
+# --- Sidebar Utilities ---
+with st.sidebar:
+    st.markdown("---")
+    st.subheader("⚡ Prediksi Manual")
 
-if st.sidebar.button("Prediksi"):
-    arr = np.array([[p_lat, p_lon, p_mag, p_dep]])
-    try:
-        scaled_feat = pipeline.named_steps['scaler'].transform(arr)
-        clust = pipeline.named_steps['kmeans'].predict(scaled_feat)[0]
-        info = cluster_info[cluster_info['cluster'] == clust].iloc[0]
-        
-        st.sidebar.success(f"Masuk ke **Cluster {clust}**")
-        st.sidebar.markdown(f"**Severity Score:** {info['severity_score']:.3f}")
-        st.sidebar.markdown(f"**Label:** {info['label']}")
-    except Exception as e:
-        st.sidebar.error(f"Error: {e}")
+    # Mini Map for Coordinate Input
+    st.markdown("<small>Klik peta untuk atur lokasi (Ganti Lat/Lon Manual):</small>", unsafe_allow_html=True)
+    mini_map = folium.Map(location=[-2.5, 118.0], zoom_start=4, width="100%", height=150, control_scale=True)
+    mini_map.add_child(folium.LatLngPopup()) 
+    map_data = st_folium(mini_map, height=150, width=280, key="mini_map_prediction")
 
-st.sidebar.markdown("---")
-with st.sidebar.expander("📂 Upload Data Baru"):
-    uploaded_file = st.file_uploader("Upload CSV/TSV", type=['csv', 'tsv'])
-    if uploaded_file is not None:
-        st.info("File diterima. Analisis otomatis berjalan di background.")
+    # Handle Map Click
+    if map_data and map_data.get('last_clicked'):
+        st.session_state['manual_lat'] = map_data['last_clicked']['lat']
+        st.session_state['manual_lon'] = map_data['last_clicked']['lng']
+
+    # Default to 0.0 if not in state
+    if 'manual_lat' not in st.session_state: st.session_state['manual_lat'] = 0.0
+    if 'manual_lon' not in st.session_state: st.session_state['manual_lon'] = 0.0
+
+    # Display Selected Coordinates (Read-Only)
+    st.markdown(f"""
+    <div style="font-size:0.8rem; margin-bottom:10px; color:#aaa;">
+        📍 Terpilih: <b>{st.session_state['manual_lat']:.4f}, {st.session_state['manual_lon']:.4f}</b>
+    </div>
+    """, unsafe_allow_html=True)
+
+    # Other Inputs
+    p3 = st.number_input("Mag", 5.0, step=0.1)
+    p4 = st.number_input("Depth", 10.0, step=10.0)
+
+    if st.button("Hitung Risiko"):
+        try:
+            # Use values from session state directly
+            # FIX: Model expects 2 features (Mag, Depth), not 4 (Lat, Lon, Mag, Depth) based on error
+            arr = np.array([[p3, p4]])
+            # Use pipeline if available, else reconstructed
+            # Note: In load_model we return 'pipeline', so it should be available globally or passed
+            res = pipeline.predict(arr)[0] # Pipeline handles scaling
+            lbl_res = id_to_label[res]
+            
+            # Result Display
+            r_clr = get_color(lbl_res)
+            st.markdown(f"""
+            <div style="background-color: {r_clr}; padding: 10px; border-radius: 5px; text-align: center; color: white; margin-top: 10px;">
+                <h4 style="margin:0;">{lbl_res}</h4>
+            </div>
+            """, unsafe_allow_html=True)
+            st.caption(RISK_DETAILS[lbl_res]['advice'])
+        except Exception as e: 
+            st.error(f"Error: {e}")
+
+    st.markdown("---")
+    with st.expander("📂 Upload Data"):
+        up = st.file_uploader("CSV/TSV", type=['csv','tsv'])
+        if up: st.write("Fitur upload aktif (logika disederhanakan).")
