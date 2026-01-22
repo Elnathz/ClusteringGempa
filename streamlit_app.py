@@ -213,20 +213,32 @@ with m2: st.metric("Rata-rata Magnitudo", f"{filtered[mag_col].mean():.2f}" if n
 with m3: st.metric("Magnitudo Tertinggi", f"{filtered[mag_col].max():.2f}" if not filtered.empty else "0")
 
 # --- C. Risk Legend (Top) ---
-st.subheader("📋 Informasi Kategori & Rekomendasi")
+st.subheader("📋 Informasi Kategori Risiko Intensitas Gempa & Rekomendasi")
 info_cols = st.columns(4)
 for i, (_, row) in enumerate(cluster_info_sorted.iterrows()):
     lbl = row['label']
     clr = get_color(lbl)
     det = RISK_DETAILS.get(lbl, {})
     with info_cols[i]:
+        # Determine Indonesian translation
+        translations = {
+            'Low': 'Rendah',
+            'Moderate': 'Sedang', 
+            'High': 'Tinggi',
+            'Very High': 'Sangat Tinggi'
+        }
+        indo_label = translations.get(lbl, lbl)
+        
         st.markdown(f"""
-        <div style="background-color: #262730; border-top: 4px solid {clr}; padding: 15px; border-radius: 8px; height: 100%;">
-            <h3 style="margin:0 0 5px 0; color: {clr};">{lbl}</h3>
-            <p style="font-size: 0.8rem; margin-bottom:5px;"><b>Efek:</b> {det.get('impact')}</p>
-            <p style="font-size: 0.8rem; color:#FFD700;"><b>Saran:</b> {det.get('advice')}</p>
+        <div style="background-color: #ffffff; border: 1px solid #e0e0e0; border-top: 4px solid {clr}; padding: 15px; border-radius: 8px; min-height: 200px; display: flex; flex-direction: column; box-shadow: 0 2px 4px rgba(0,0,0,0.1);">
+            <h3 style="margin:0 0 2px 0; color: {clr};">{lbl}</h3>
+            <p style="margin:0 0 10px 0; font-size: 0.75rem; color: #666; font-style: italic;">({indo_label})</p>
+            <p style="font-size: 0.8rem; margin-bottom:5px; color: #31333F;"><b>Efek:</b> {det.get('impact')}</p>
+            <p style="font-size: 0.8rem; color: #d97706;"><b>Saran:</b> {det.get('advice')}</p>
         </div>
         """, unsafe_allow_html=True)
+
+st.markdown("<br>", unsafe_allow_html=True)
 
 # --- D. Search Analysis Result Display (Main Area) ---
 if search_context and 'dominant_risk' in search_context:
@@ -234,7 +246,7 @@ if search_context and 'dominant_risk' in search_context:
     r_clr = get_color(r_lbl)
     st.markdown(f"""
     <div style="margin: 20px 0; padding: 20px; border: 2px solid {r_clr}; border-radius: 10px; background-color: rgba(255,255,255,0.05);">
-        <h3 style="margin:0;">📍 Analisis Wilayah: {search_context['address']}</h3>
+        <h3 style="margin:0;">Analisis Risiko Intensitas Gempa di Wilayah: 📍{search_context['address']}</h3>
         <p>Ditemukan <b>{search_context['count']}</b> gempa dalam radius {search_radius}km.</p>
         <h2 style="color: {r_clr};">Status: {r_lbl}</h2>
         <p><b>Rekomendasi Utama:</b> {search_context['advice']}</p>
