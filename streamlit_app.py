@@ -213,7 +213,7 @@ with m2: st.metric("Rata-rata Magnitudo", f"{filtered[mag_col].mean():.2f}" if n
 with m3: st.metric("Magnitudo Tertinggi", f"{filtered[mag_col].max():.2f}" if not filtered.empty else "0")
 
 # --- C. Risk Legend (Top) ---
-st.subheader("📋 Informasi Kategori Risiko Intensitas Gempa & Rekomendasi")
+st.subheader("📋 Informasi Kategori Risiko Bahaya Gempa Bumi & Rekomendasi")
 info_cols = st.columns(4)
 for i, (_, row) in enumerate(cluster_info_sorted.iterrows()):
     lbl = row['label']
@@ -346,7 +346,7 @@ if search_context:
         with c1:
             st.markdown(f"""
             <div style="background-color:{s_color}; padding:20px; border-radius:10px; color:white; text-align:center; height: {CARD_HEIGHT}px; display: flex; flex-direction: column; justify-content: center;">
-                <h4 style="margin:0;">Status Musiman</h4>
+                <h4 style="margin:0;">Status Bahaya Musiman</h4>
                 <h2 style="margin:10px 0;">{s_risk}</h2>
                 <p style="margin:0;">{s_msg}</p>
             </div>
